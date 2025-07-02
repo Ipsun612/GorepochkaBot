@@ -3,6 +3,8 @@
   "version": "1.0.0",
   "main": "bot.js",
   "dependencies": {
+    "@ffmpeg-installer/ffmpeg": "^1.1.0",
+    "@google/generative-ai": "^0.24.1",
     "accepts": "^2.0.0",
     "ajv": "^6.12.6",
     "array-buffer-byte-length": "^1.0.2",
@@ -16,7 +18,7 @@
     "available-typed-arrays": "^1.0.7",
     "aws-sign2": "^0.7.0",
     "aws4": "^1.13.2",
-    "axios": "^1.9.0",
+    "axios": "^1.10.0",
     "bcrypt-pbkdf": "^1.0.2",
     "bl": "^1.2.3",
     "bluebird": "^3.7.2",
@@ -42,7 +44,7 @@
     "define-properties": "^1.2.1",
     "delayed-stream": "^1.0.0",
     "depd": "^2.0.0",
-    "dotenv": "^16.5.0",
+    "dotenv": "^16.6.1",
     "dunder-proto": "^1.0.1",
     "ecc-jsbn": "^0.1.2",
     "ee-first": "^1.1.1",
@@ -182,10 +184,10 @@
     "sshpk": "^1.18.0",
     "statuses": "^2.0.1",
     "stealthy-require": "^1.1.1",
+    "string_decoder": "^1.1.1",
     "string.prototype.trim": "^1.2.10",
     "string.prototype.trimend": "^1.0.9",
     "string.prototype.trimstart": "^1.0.8",
-    "string_decoder": "^1.1.1",
     "tldts": "^6.1.86",
     "tldts-core": "^6.1.86",
     "toidentifier": "^1.0.1",
@@ -213,11 +215,10 @@
     "which-typed-array": "^1.1.19",
     "wrappy": "^1.0.2"
   },
-  "devDependencies": {},
-"scripts": {
-  "start": "node bot.js",
-  "test": "echo \"Error: no test specified\" && exit 1"
-},
+  "scripts": {
+    "start": "node bot.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
   "keywords": [],
   "author": "",
   "license": "ISC",
