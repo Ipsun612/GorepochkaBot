@@ -18,7 +18,7 @@ if (!process.env.GEMINI_API_KEY) {
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
 // Используем РАБОЧУЮ модель. Она поддерживает и текст, и изображения, и аудио.
-const GEMINI_MODEL_NAME = process.env.GEMINI_MODEL_NAME || "gemini-2.5-flash"; 
+const GEMINI_MODEL_NAME = process.env.GEMINI_MODEL_NAME || "gemini-2.5-flash";
 console.log(`🧠 Используется модель: ${GEMINI_MODEL_NAME}`);
 
 // Настройка директорий
@@ -67,9 +67,9 @@ function getDefaultSlotState() {
         contextSize: 0,
         spamCounter: 0,
         // Новое начальное значение уровня отношений
-        relationshipLevel: 0, 
+        relationshipLevel: 0,
         // +++ ДОБАВЛЕНО: Новое поле для хранения текстового статуса
-        relationshipStatus: 'Незнакомец', 
+        relationshipStatus: 'Незнакомец',
         stressLevel: 0,
         isBanned: false,
         ignoreTimer: null,
@@ -149,7 +149,7 @@ function initializeUser(chatId) {
             slots: Array(MAX_CHAT_SLOTS).fill(null).map(() => getDefaultSlotState()),
             isDebugMode: false,
             // --- ДОБАВЛЕНО: Хранилище для смещения часового пояса в минутах ---
-            timezoneOffset: null 
+            timezoneOffset: null
         };
     }
     if (!chatHistories[chatId]) {
@@ -165,7 +165,15 @@ function loadChatHistory(chatId, slotIndex) {
     const filePath = getChatHistoryPath(chatId, slotIndex);
     if (fs.existsSync(filePath)) {
         try {
-            return JSON.parse(fs.readFileSync(filePath, 'utf8'));
+            const data = fs.readFileSync(filePath, 'utf8');
+            const history = JSON.parse(data);
+            // ПРОВЕРКА И ИНИЦИАЛИЗАЦИЯ ДАННЫХ ДЛЯ СТАРЫХ ИСТОРИЙ
+            if (userStates[chatId] && userStates[chatId].slots[slotIndex]) {
+                 if (userStates[chatId].slots[slotIndex].relationshipStatus === undefined) {
+                    userStates[chatId].slots[slotIndex].relationshipStatus = 'Незнакомец';
+                 }
+            }
+            return history;
         } catch (e) {
             console.error(`❌ Ошибка чтения истории ${chatId}_slot_${slotIndex}:`, e.message);
             return [];
@@ -270,6 +278,29 @@ async function sendRelationshipStats(bot, chatId, slotState) {
     }
 }
 
+const showWelcomeMessage = async (chatId) => {
+    const options = {
+        reply_markup: {
+            inline_keyboard: [
+                [{ text: 'Начать переписываться', callback_data: 'start_chat' }]
+            ]
+        },
+        parse_mode: 'Markdown'
+    };
+    try {
+        if (!(await isChatValid(chatId))) return;
+        await bot.sendMessage(chatId, welcomeMessage, options);
+    } catch (error) {
+        if (error.response?.body?.error_code === 403) {
+            console.error(`❌ Пользователь ${chatId} заблокировал бота.`);
+            if (userStates[chatId]) delete userStates[chatId];
+            if (chatHistories[chatId]) delete chatHistories[chatId];
+            return;
+        }
+        console.error(`❌ Ошибка отправки приветствия (${chatId}):`, error.message);
+    }
+};
+
 bot.onText(/\/start/, async (msg) => {
     const chatId = msg.chat.id;
     try {
@@ -358,7 +389,7 @@ function extractAndRemoveCommands(text, slotState, isDebugMode) {
         let match;
         while ((match = regex.exec(text)) !== null) {
             // match[1] - это захваченная группа (цифра или текст статуса)
-            const value = match[1]; 
+            const value = match[1];
             pattern.action(value);
         }
 
@@ -408,13 +439,13 @@ bot.onText(/\/chatlist/, async (msg) => {
         
         // 2. Если не заблокирован, проверяем, активен ли он сейчас.
         } else if (i === userState.activeChatSlot) {
-            // Для активного чата показываем максимум информации: статус и все показатели.
-            buttonText = `➡️ Чат ${i + 1} ✨ ❤️${slotData.relationshipLevel} ⛈️${slotData.stressLevel}`;
+            // +++ ИСПРАВЛЕНО: Добавляем текстовый статус в скобках
+            buttonText = `➡️ Чат ${i + 1} ✨ ❤️${slotData.relationshipLevel} (${slotData.relationshipStatus}) ⛈️${slotData.stressLevel}`;
         
         // 3. Если не заблокирован и не активен, но был использован.
         } else if (isUsed) {
-            // Для "сохраненного" чата показываем его показатели.
-            buttonText = `Чат ${i + 1} 📂 ❤️${slotData.relationshipLevel} ⛈️${slotData.stressLevel}`;
+             // +++ ИСПРАВЛЕНО: Добавляем текстовый статус в скобках
+            buttonText = `Чат ${i + 1} 📂 ❤️${slotData.relationshipLevel} (${slotData.relationshipStatus}) ⛈️${slotData.stressLevel}`;
         
         // 4. Если ничего из вышеперечисленного, значит, слот пуст.
         } else {
@@ -636,44 +667,7 @@ async function handleAnimatedMedia(bot, msg) {
 }
 
 
-// НОВЫЙ ОБРАБОТЧИК ДЛЯ ГОЛОСА
-async function handleVoiceMessage(msg) {
-    const chatId = msg.chat.id;
-
-    if (!msg.voice) return;
-
-    try {
-        await bot.sendMessage(chatId, '🎙️ Слушаю твоё ГС, секундочку...');
-        await bot.sendChatAction(chatId, 'typing');
-
-        const fileId = msg.voice.file_id;
-        const mimeType = msg.voice.mime_type || 'audio/ogg';
-
-        if (msg.voice.file_size > 14 * 1024 * 1024) { // Лимит ~15MB, ставим с запасом
-            await bot.sendMessage(chatId, "Ой, это голосовое сообщение слишком длинное. Попробуйте записать что-нибудь покороче.");
-            return;
-        }
-        
-        const fileLink = await bot.getFileLink(fileId);
-        const response = await axios({ url: fileLink, responseType: 'arraybuffer' });
-        const audioBuffer = Buffer.from(response.data);
-
-        // Вызываем наш модуль для распознавания речи
-        const transcribedText = await transcribeAudio(genAI, audioBuffer, mimeType);
-
-        if (transcribedText && transcribedText.length > 0) {
-            
-            // Отправляем распознанный текст в основную логику обработки
-            await processUserText(chatId, transcribedText);
-        } else {
-            await bot.sendMessage(chatId, 'Хм, не могу разобрать, чё ты вякнул. Попробуй перезаписать сообщение или напиши текстом.');
-        }
-
-    } catch (error) {
-        console.error(`❌ Ошибка обработки голосового сообщения для чата ${chatId}:`, error.message);
-        await bot.sendMessage(chatId, '🚫 Произошла ошибка при обработке вашего голосового сообщения. Пожалуйста, попробуйте еще раз.');
-    }
-}// ПОЛНАЯ ВЕРСИЯ ДЛЯ ЗАМЕНЫ
+// ПОЛНАЯ ВЕРСИЯ ДЛЯ ЗАМЕНЫ
 async function handleVoiceMessage(msg) {
     const chatId = msg.chat.id;
 
@@ -712,7 +706,6 @@ async function handleVoiceMessage(msg) {
     }
 }
 
-// НОВАЯ ОБЩАЯ ФУНКЦИЯ ДЛЯ ОБРАБОТКИ ТЕКСТА
 // ПОЛНАЯ ВЕРСИЯ ДЛЯ ЗАМЕНЫ
 async function processUserText(chatId, userInput, replyToMessageId) {
     const userState = userStates[chatId];
@@ -829,16 +822,16 @@ bot.on('message', async (msg) => {
     }
 
     const userInput = msg.text;
-    if (!userInput) return; 
+    if (!userInput) return;
 
     if (!(await isChatValid(chatId))) return;
 
     if (userInput.startsWith('/') && userInput !== '<Игнор от пользователя>') {
-        if (['/start', '/chatlist'].includes(userInput)) return; 
+        if (['/start', '/chatlist'].includes(userInput)) return;
         
         if (userInput === '/debug') {
             const userState = userStates[chatId];
-            userState.isDebugMode = !userState.isDebugMode; 
+            userState.isDebugMode = !userState.isDebugMode;
 
             if (userState.isDebugMode) {
                 await bot.sendMessage(chatId, "✅ Включён режим отладки. Команды <> теперь будут видны.");
@@ -945,7 +938,7 @@ async function sendSplitMessage(bot, chatId, originalText, isAiResponseType, rep
         
         const sendMessageAndUpdateFlag = async (textChunk) => {
             if (!(await isChatValid(chatId))) return null;
-            if (!textChunk || !textChunk.trim()) return null; 
+            if (!textChunk || !textChunk.trim()) return null;
 
             const options = createMessageOptions(textChunk);
             const sent = await bot.sendMessage(chatId, textChunk, options);
@@ -1021,7 +1014,7 @@ async function sendSplitMessage(bot, chatId, originalText, isAiResponseType, rep
                     if (char === '.' && i + 2 < part.length && part[i + 1] === '.' && part[i + 2] === '.') {
                         eventType = 'ellipsis';
                         currentMessageSegment += part[i + 1] + part[i + 2];
-                        i += 2; 
+                        i += 2;
                     } else if (char === '.' || char === '?' || char === '!') {
                         eventType = 'punctuation';
                     }
@@ -1042,7 +1035,7 @@ async function sendSplitMessage(bot, chatId, originalText, isAiResponseType, rep
                                 }
                                 currentMessageSegment = '';
                                 onesSentThisMessage++;
-                                zerosSentThisMessage = 0; 
+                                zerosSentThisMessage = 0;
                                 punctuationEventsInCurrentTextSegment = 0;
                                 await startTyping();
                                 const delay = Math.random() * (3700 - 990) + 990;
