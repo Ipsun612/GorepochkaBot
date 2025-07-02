@@ -66,7 +66,10 @@ function getDefaultSlotState() {
         lastActive: 0,
         contextSize: 0,
         spamCounter: 0,
-        relationshipLevel: 0,
+        // Новое начальное значение уровня отношений
+        relationshipLevel: 0, 
+        // +++ ДОБАВЛЕНО: Новое поле для хранения текстового статуса
+        relationshipStatus: 'Незнакомец', 
         stressLevel: 0,
         isBanned: false,
         ignoreTimer: null,
@@ -251,19 +254,12 @@ async function isChatValid(chatId) {
     }
 }
 
-function getRelationshipStatus(level) {
-    if (level <= 30) return "Незнакомец";
-    if (level <= 50) return "Приятель";
-    if (level <= 70) return "Друг";
-    if (level <= 100) return "Лучший друг";
-    return "Отец";
-}
 
 async function sendRelationshipStats(bot, chatId, slotState) {
     if (!slotState) return;
-    const relationshipStatus = getRelationshipStatus(slotState.relationshipLevel);
+    // +++ ИЗМЕНЕНО: Теперь мы берем статус напрямую из состояния, а не вычисляем его.
     const statsMessage = `Статистика (Чат ${userStates[chatId] ? userStates[chatId].activeChatSlot + 1 : 'N/A'}):
-  Уровень отношений: ${slotState.relationshipLevel} - ${relationshipStatus}
+  Уровень отношений: ${slotState.relationshipLevel} (${slotState.relationshipStatus})
   Стресс: ${slotState.stressLevel}`;
     try {
         if (!(await isChatValid(chatId))) return;
@@ -273,29 +269,6 @@ async function sendRelationshipStats(bot, chatId, slotState) {
         console.error(`❌ Ошибка отправки статистики (${chatId}):`, error.message);
     }
 }
-
-const showWelcomeMessage = async (chatId) => {
-    const options = {
-        reply_markup: {
-            inline_keyboard: [
-                [{ text: 'Начать переписываться', callback_data: 'start_chat' }]
-            ]
-        },
-        parse_mode: 'Markdown'
-    };
-    try {
-        if (!(await isChatValid(chatId))) return;
-        await bot.sendMessage(chatId, welcomeMessage, options);
-    } catch (error) {
-        if (error.response?.body?.error_code === 403) {
-            console.error(`❌ Пользователь ${chatId} заблокировал бота.`);
-            if (userStates[chatId]) delete userStates[chatId];
-            if (chatHistories[chatId]) delete chatHistories[chatId];
-            return;
-        }
-        console.error(`❌ Ошибка отправки приветствия (${chatId}):`, error.message);
-    }
-};
 
 bot.onText(/\/start/, async (msg) => {
     const chatId = msg.chat.id;
@@ -364,8 +337,14 @@ bot.on('callback_query', async (callbackQuery) => {
 function extractAndRemoveCommands(text, slotState, isDebugMode) {
     let modifiedText = text;
     const patterns = [
+        // +++ ИЗМЕНЕНО: Диапазон теперь от -100 до 100
         { regex: /<Повысить уровень отношений на (\d+)>/g, action: (amount) => slotState.relationshipLevel = Math.min(100, slotState.relationshipLevel + parseInt(amount)) },
-        { regex: /<Понизить уровень отношений на (\d+)>/g, action: (amount) => slotState.relationshipLevel = Math.max(0, slotState.relationshipLevel - parseInt(amount)) },
+        { regex: /<Понизить уровень отношений на (\d+)>/g, action: (amount) => slotState.relationshipLevel = Math.max(-100, slotState.relationshipLevel - parseInt(amount)) },
+        
+        // +++ ДОБАВЛЕНО: Новая команда для смены текстового статуса
+        { regex: /<Изменить статус отношений на:\s*(.*?)>/g, action: (status) => slotState.relationshipStatus = status.trim() },
+
+        // Остальные команды без изменений
         { regex: /<Повысить стресс на (\d+)>/g, action: (amount) => slotState.stressLevel = Math.min(100, slotState.stressLevel + parseInt(amount)) },
         { regex: /<Понизить стресс на (\d+)>/g, action: (amount) => slotState.stressLevel = Math.max(0, slotState.stressLevel - parseInt(amount)) },
         { regex: /<Дать бан>/g, action: () => slotState.isBanned = true },
@@ -374,19 +353,22 @@ function extractAndRemoveCommands(text, slotState, isDebugMode) {
     ];
 
     patterns.forEach(pattern => {
+        // Используем глобальный флаг 'g' для поиска всех вхождений
         const regex = new RegExp(pattern.regex.source, 'g');
         let match;
         while ((match = regex.exec(text)) !== null) {
-            const amount = match[1]; 
-            pattern.action(amount);
+            // match[1] - это захваченная группа (цифра или текст статуса)
+            const value = match[1]; 
+            pattern.action(value);
         }
 
-        // --- ИЗМЕНЕНО: Проверяем переданный глобальный флаг ---
+        // Удаляем команду из текста, если не включен режим отладки
         if (!isDebugMode) {
             modifiedText = modifiedText.replace(regex, '');
         }
     });
 
+    // Очистка текста от лишних тегов и пробелов, если не в режиме отладки
     if (!isDebugMode) {
         modifiedText = modifiedText.replace(/<.*?>/g, '');
         modifiedText = modifiedText.replace(/\s{2,}/g, ' ').trim();
