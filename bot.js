@@ -89,10 +89,6 @@ function getDefaultSlotState() {
         spamCounter: 0,
         // Новое начальное значение уровня отношений
         relationshipLevel: 0,
-<<<<<<< HEAD
-=======
-        // +++ ДОБАВЛЕНО: Новое поле для хранения текстового статуса
->>>>>>> 031df6bd27860e983e22a60a88ce83f7b198bcf0
         relationshipStatus: 'Незнакомец',
         stressLevel: 0,
         isBanned: false,
