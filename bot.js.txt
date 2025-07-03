@@ -1,5 +1,4 @@
 require('dotenv').config();
-require('./stickerProcessor');
 const express = require('express');
 const TelegramBot = require('node-telegram-bot-api');
 const { GoogleGenerativeAI } = require("@google/generative-ai");
@@ -9,7 +8,6 @@ const fs = require('fs');
 const path = require('path');
 const axios = require('axios');
 
-
 // Инициализация Google Gemini API
 if (!process.env.GEMINI_API_KEY) {
     console.error('❌ Ошибка: GEMINI_API_KEY не найден в .env файле.');
@@ -18,7 +16,7 @@ if (!process.env.GEMINI_API_KEY) {
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
 // Используем РАБОЧУЮ модель. Она поддерживает и текст, и изображения, и аудио.
-const GEMINI_MODEL_NAME = process.env.GEMINI_MODEL_NAME || "gemini-2.5-flash";
+const GEMINI_MODEL_NAME = process.env.GEMINI_MODEL_NAME || "gemini-2.5-flash"; 
 console.log(`🧠 Используется модель: ${GEMINI_MODEL_NAME}`);
 
 // Настройка директорий
@@ -27,18 +25,12 @@ const IMAGES_DIR = path.join(__dirname, 'images');
 if (!fs.existsSync(HISTORY_DIR)) fs.mkdirSync(HISTORY_DIR);
 if (!fs.existsSync(IMAGES_DIR)) fs.mkdirSync(IMAGES_DIR);
 
-// Создайте папку 'bot_data' в корне проекта
-const DATA_DIR = path.join(__dirname, 'Logs');
-if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR);
-
-const WELCOME_MESSAGE_PATH = path.join(DATA_DIR, 'FirstMessage.txt');
-const CHANGELOG_PATH = path.join(DATA_DIR, 'ChangeLog.txt');
-const CREDITS_PATH = path.join(__dirname, 'Credits', 'credits.txt');
+// Пути к файлам. Убедитесь, что они верны для вашей системы.
+const WELCOME_MESSAGE_PATH = 'C:/Users/Shilova/Desktop/MySeksGorepochka/Logs/FirstMessage.txt';
+const CHANGELOG_PATH = 'C:/Users/Shilova/Desktop/MySeksGorepochka/Logs/ChangeLog.txt';
 
 console.log(`ℹ️ Путь к приветственному сообщению: ${WELCOME_MESSAGE_PATH}`);
 console.log(`ℹ️ Путь к логу изменений: ${CHANGELOG_PATH}`);
-// +++ ДОБАВЛЕНО: Логирование пути к титрам +++
-console.log(`ℹ️ Путь к титрам: ${CREDITS_PATH}`);
 
 
 let welcomeMessage = 'Добро пожаловать! Бот готов к работе.';
@@ -48,24 +40,6 @@ try {
 } catch (error) {
     console.error(`❌ Ошибка загрузки приветствия: ${error.message}`);
     console.log('ℹ️ Используется резервное приветственное сообщение');
-}
-
-let creditsText = 'Титры не найдены. Создатель, проверь файл Credits/credits.txt';
-try {
-    // Проверяем, существует ли файл перед чтением
-    if (fs.existsSync(CREDITS_PATH)) {
-        creditsText = fs.readFileSync(CREDITS_PATH, 'utf8');
-        console.log('✅ Титры загружены из файла');
-    } else {
-        console.warn(`⚠️ Файл титров не найден по пути: ${CREDITS_PATH}`);
-        // Создаем папку и файл-пример, если их нет
-        fs.mkdirSync(path.dirname(CREDITS_PATH), { recursive: true });
-        fs.writeFileSync(CREDITS_PATH, '**Титры**\n\nРазработано [Ваше Имя].');
-        creditsText = fs.readFileSync(CREDITS_PATH, 'utf8');
-        console.log('ℹ️ Создан пример файла credits.txt. Пожалуйста, отредактируйте его.');
-    }
-} catch (error) {
-    console.error(`❌ Ошибка загрузки титров: ${error.message}`);
 }
 
 let systemPrompt = '';
@@ -88,85 +62,15 @@ function getDefaultSlotState() {
         contextSize: 0,
         spamCounter: 0,
         // Новое начальное значение уровня отношений
-        relationshipLevel: 0,
-<<<<<<< HEAD
-=======
+        relationshipLevel: 0, 
         // +++ ДОБАВЛЕНО: Новое поле для хранения текстового статуса
->>>>>>> 031df6bd27860e983e22a60a88ce83f7b198bcf0
-        relationshipStatus: 'Незнакомец',
+        relationshipStatus: 'Незнакомец', 
         stressLevel: 0,
         isBanned: false,
         ignoreTimer: null,
-        ignoreState: 'default',
-        // +++ ДОБАВЛЕНО: Новые поля для биографии +++
-        userBio: '', // Здесь будет храниться текст биографии
-        isWaitingForBio: false // Флаг, что мы ждем ввода от пользователя
+        ignoreState: 'default'
     };
 }
-
-
-// --- НАЧАЛО БЛОКА: ЛОГИКА ТАЙМЕРА "ИГНОРА" ---
-
-// Функция для сброса существующего таймера
-function clearIgnoreTimer(chatId, slotIndex) {
-    if (userStates[chatId] && userStates[chatId].slots[slotIndex] && userStates[chatId].slots[slotIndex].ignoreTimer) {
-        clearTimeout(userStates[chatId].slots[slotIndex].ignoreTimer);
-        userStates[chatId].slots[slotIndex].ignoreTimer = null;
-        console.log(`[Таймер для ${chatId}/${slotIndex}] Таймер сброшен из-за активности пользователя.`);
-    }
-}
-
-// Функция для установки нового таймера
-function setIgnoreTimer(chatId, slotIndex) {
-    // Сначала всегда сбрасываем старый таймер, чтобы не было дублей
-    clearIgnoreTimer(chatId, slotIndex);
-
-    const slotState = userStates[chatId].slots[slotIndex];
-
-    // Не запускаем таймер для забаненных чатов
-    if (slotState.isBanned) {
-        return;
-    }
-
-    let minDelay, maxDelay;
-
-    // Выбираем диапазон времени в зависимости от состояния
-    if (slotState.ignoreState === 'goodbye') {
-        // от 2 до 4 дней в миллисекундах
-        minDelay = 2 * 24 * 60 * 60 * 1000;
-        maxDelay = 4 * 24 * 60 * 60 * 1000;
-        console.log(`[Таймер для ${chatId}/${slotIndex}] Установлен долгий таймер (2-4 дня) из-за статуса "goodbye"`);
-    } else { // 'default' state
-        // от 35 до 60 минут в миллисекундах
-        minDelay = 35 * 60 * 1000;
-        maxDelay = 60 * 60 * 1000;
-         console.log(`[Таймер для ${chatId}/${slotIndex}] Установлен стандартный таймер (35-60 мин)`);
-    }
-
-    // Генерируем случайную задержку в заданном диапазоне
-    const delay = Math.floor(Math.random() * (maxDelay - minDelay + 1)) + minDelay;
-
-    const timerId = setTimeout(async () => {
-        // Проверяем, что чат все еще существует и активен
-        if (!userStates[chatId] || !userStates[chatId].slots[slotIndex] || !(await isChatValid(chatId))) {
-            return;
-        }
-        
-        console.log(`[Таймер для ${chatId}/${slotIndex}] СРАБОТАЛ! Отправка команды <Игнор от пользователя>`);
-        
-        // Имитируем сообщение от пользователя с внутренней командой
-        await processUserText(chatId, '<Игнор от пользователя>');
-
-    }, delay);
-
-    // Сохраняем ID таймера в состоянии слота
-    slotState.ignoreTimer = timerId;
-}
-
-// --- КОНЕЦ БЛОКА: ЛОГИКА ТАЙМЕРА "ИГНОРА" ---
-
-
-
 
 function initializeUser(chatId) {
     if (!userStates[chatId]) {
@@ -174,9 +78,6 @@ function initializeUser(chatId) {
             hasCompletedWelcome: false,
             activeChatSlot: 0,
             slots: Array(MAX_CHAT_SLOTS).fill(null).map(() => getDefaultSlotState()),
-            isDebugMode: false,
-            // --- ДОБАВЛЕНО: Хранилище для смещения часового пояса в минутах ---
-            timezoneOffset: null
         };
     }
     if (!chatHistories[chatId]) {
@@ -192,15 +93,7 @@ function loadChatHistory(chatId, slotIndex) {
     const filePath = getChatHistoryPath(chatId, slotIndex);
     if (fs.existsSync(filePath)) {
         try {
-            const data = fs.readFileSync(filePath, 'utf8');
-            const history = JSON.parse(data);
-            // ПРОВЕРКА И ИНИЦИАЛИЗАЦИЯ ДАННЫХ ДЛЯ СТАРЫХ ИСТОРИЙ
-            if (userStates[chatId] && userStates[chatId].slots[slotIndex]) {
-                 if (userStates[chatId].slots[slotIndex].relationshipStatus === undefined) {
-                    userStates[chatId].slots[slotIndex].relationshipStatus = 'Незнакомец';
-                 }
-            }
-            return history;
+            return JSON.parse(fs.readFileSync(filePath, 'utf8'));
         } catch (e) {
             console.error(`❌ Ошибка чтения истории ${chatId}_slot_${slotIndex}:`, e.message);
             return [];
@@ -223,11 +116,7 @@ function clearChatHistoryAndState(chatId, slotIndex) {
         chatHistories[chatId][slotIndex] = [];
     }
     if (userStates[chatId] && userStates[chatId].slots[slotIndex]) {
-        // +++ ИЗМЕНЕНО: Сохраняем биографию перед сбросом +++
-        const currentUserBio = userStates[chatId].slots[slotIndex].userBio || '';
         userStates[chatId].slots[slotIndex] = getDefaultSlotState();
-        // Восстанавливаем биографию в новом, чистом состоянии
-        userStates[chatId].slots[slotIndex].userBio = currentUserBio;
     }
 }
 
@@ -244,38 +133,6 @@ app.use(express.json());
 app.get('/', (req, res) => {
     res.send('Telegram LLM Bot с Google Gemini API работает!');
 });
-// --- НАЧАЛО БЛОКА ВРЕМЕНИ ---
-
-// 1. Отдаем нашу веб-страницу для синхронизации
-app.get('/tz-setup', (req, res) => {
-    res.sendFile(path.join(__dirname, 'timezone.html'));
-});
-
-// 2. Принимаем данные со страницы и сохраняем их
-app.post('/set-timezone', async (req, res) => {
-    const { chatId, offset } = req.body;
-
-    if (!chatId || offset === undefined) {
-        return res.status(400).send('Missing chatId or offset');
-    }
-
-    initializeUser(chatId); // Убедимся, что пользователь есть в системе
-    userStates[chatId].timezoneOffset = parseInt(offset, 10);
-
-    console.log(`[Время] Для чата ${chatId} установлен часовой пояс со смещением ${offset} минут.`);
-    
-    try {
-        // Отправляем подтверждение в чат
-        await bot.sendMessage(chatId, 'Отлично! Я настроила свои часы под твой часовой пояс. Теперь я буду знать, когда у тебя утро, а когда ночь ✨');
-    } catch (e) {
-        console.error("Не удалось отправить сообщение о синхронизации времени:", e.message);
-    }
-
-    res.status(200).send('Timezone updated');
-});
-
-// --- КОНЕЦ БЛОКА ВРЕМЕНИ ---
-
 
 async function isChatValid(chatId) {
     try {
@@ -293,7 +150,6 @@ async function isChatValid(chatId) {
     }
 }
 
-
 async function sendRelationshipStats(bot, chatId, slotState) {
     if (!slotState) return;
     // +++ ИЗМЕНЕНО: Теперь мы берем статус напрямую из состояния, а не вычисляем его.
@@ -309,42 +165,6 @@ async function sendRelationshipStats(bot, chatId, slotState) {
     }
 }
 
-const showWelcomeMessage = async (chatId) => {
-    const options = {
-        reply_markup: {
-            inline_keyboard: [
-                [{ text: 'Начать переписываться', callback_data: 'start_chat' }]
-            ]
-        },
-        parse_mode: 'Markdown'
-    };
-    try {
-        if (!(await isChatValid(chatId))) return;
-        await bot.sendMessage(chatId, welcomeMessage, options);
-    } catch (error) {
-        if (error.response?.body?.error_code === 403) {
-            console.error(`❌ Пользователь ${chatId} заблокировал бота.`);
-            if (userStates[chatId]) delete userStates[chatId];
-            if (chatHistories[chatId]) delete chatHistories[chatId];
-            return;
-        }
-        console.error(`❌ Ошибка отправки приветствия (${chatId}):`, error.message);
-    }
-};
-
-bot.onText(/\/start/, async (msg) => {
-    const chatId = msg.chat.id;
-    try {
-        if (!(await isChatValid(chatId))) return;
-        initializeUser(chatId);
-        userStates[chatId].hasCompletedWelcome = false;
-        await showWelcomeMessage(chatId);
-        console.log(`Пользователь ${chatId} отправил /start`);
-    } catch (error) {
-        console.error(`❌ Ошибка в /start (${chatId}):`, error.message);
-    }
-});
-
 bot.on('callback_query', async (callbackQuery) => {
     const chatId = callbackQuery.message.chat.id;
     const data = callbackQuery.data;
@@ -359,27 +179,10 @@ bot.on('callback_query', async (callbackQuery) => {
         } else if (data.startsWith('switch_chat_')) {
             const slotIndex = parseInt(data.split('_')[2]);
             if (slotIndex >= 0 && slotIndex < MAX_CHAT_SLOTS) {
-                
-                // --- ДОБАВЛЕНО: Управление таймерами при переключении ---
-                // 1. Останавливаем таймер для чата, который пользователь покидает.
-                const oldSlotIndex = userStates[chatId].activeChatSlot;
-                clearIgnoreTimer(chatId, oldSlotIndex);
-                // 2. Если в покинутом чате была история, запускаем для него таймер.
-                if (userStates[chatId].slots[oldSlotIndex].interactions > 0) {
-                    setIgnoreTimer(chatId, oldSlotIndex);
-                }
-                // --- КОНЕЦ ДОБАВЛЕНИЯ ---
-
                 userStates[chatId].activeChatSlot = slotIndex;
                 if (chatHistories[chatId][slotIndex].length === 0 && fs.existsSync(getChatHistoryPath(chatId, slotIndex))) {
                     chatHistories[chatId][slotIndex] = loadChatHistory(chatId, slotIndex);
                 }
-
-                // --- ДОБАВЛЕНО: Сбрасываем таймер для нового активного чата ---
-                // Это нужно на случай, если для него уже был запущен таймер, пока он был неактивен.
-                clearIgnoreTimer(chatId, slotIndex);
-                // --- КОНЕЦ ДОБАВЛЕНИЯ ---
-
                 await bot.answerCallbackQuery(callbackQuery.id, { text: `Переключено на чат ${slotIndex + 1}` });
                 await bot.sendMessage(chatId, `Вы переключились на чат ${slotIndex + 1}.`);
                 console.log(`Пользователь ${chatId} переключился на чат ${slotIndex + 1}`);
@@ -420,7 +223,7 @@ function extractAndRemoveCommands(text, slotState, isDebugMode) {
         let match;
         while ((match = regex.exec(text)) !== null) {
             // match[1] - это захваченная группа (цифра или текст статуса)
-            const value = match[1];
+            const value = match[1]; 
             pattern.action(value);
         }
 
@@ -470,13 +273,13 @@ bot.onText(/\/chatlist/, async (msg) => {
         
         // 2. Если не заблокирован, проверяем, активен ли он сейчас.
         } else if (i === userState.activeChatSlot) {
-            // +++ ИСПРАВЛЕНО: Добавляем текстовый статус в скобках
-            buttonText = `➡️ Чат ${i + 1} ✨ ❤️${slotData.relationshipLevel} (${slotData.relationshipStatus}) ⛈️${slotData.stressLevel}`;
+            // Для активного чата показываем максимум информации: статус и все показатели.
+            buttonText = `➡️ Чат ${i + 1} ✨ ❤️${slotData.relationshipLevel} ⛈️${slotData.stressLevel}`;
         
         // 3. Если не заблокирован и не активен, но был использован.
         } else if (isUsed) {
-             // +++ ИСПРАВЛЕНО: Добавляем текстовый статус в скобках
-            buttonText = `Чат ${i + 1} 📂 ❤️${slotData.relationshipLevel} (${slotData.relationshipStatus}) ⛈️${slotData.stressLevel}`;
+            // Для "сохраненного" чата показываем его показатели.
+            buttonText = `Чат ${i + 1} 📂 ❤️${slotData.relationshipLevel} ⛈️${slotData.stressLevel}`;
         
         // 4. Если ничего из вышеперечисленного, значит, слот пуст.
         } else {
@@ -512,16 +315,19 @@ async function handleVisualMedia(bot, msg) {
     try {
         let file_id, mime_type, userPrompt;
 
+        // === НАЧАЛО ИЗМЕНЕНИЙ ===
         if (msg.sticker) {
             if (msg.sticker.is_animated || msg.sticker.is_video) {
+                // Для анимированных и видео-стикеров берем их статичное превью (thumbnail)
                 if (!msg.sticker.thumbnail) {
                      await bot.sendMessage(chatId, 'У этого стикера нет превью, не могу его рассмотреть :(');
                      return;
                 }
                 file_id = msg.sticker.thumbnail.file_id;
-                mime_type = 'image/jpeg';
+                mime_type = 'image/jpeg'; // Превью всегда JPEG
                 userPrompt = 'Пользователь прислал этот анимированный стикер проанализируй контекст недавних реплик и ответь на это.';
             } else {
+                // Для обычных статичных стикеров берем сам файл
                 file_id = msg.sticker.file_id;
                 mime_type = 'image/webp';
                 userPrompt = 'Пользователь прислал этот стикер, ответь на него согласну контексту ситуации: он прислал это просто так или для подчёркивания ситуации?.';
@@ -537,6 +343,7 @@ async function handleVisualMedia(bot, msg) {
         } else {
             return;
         }
+        // === КОНЕЦ ИЗМЕНЕНИЙ ===
 
         const file = await bot.getFile(file_id);
         if (!file || !file.file_path) {
@@ -574,10 +381,7 @@ async function handleVisualMedia(bot, msg) {
         }
         
         let responseText = response.candidates[0].content.parts[0].text;
-        
-        // --- ИЗМЕНЕНО: Получаем глобальный флаг отладки и передаем его ---
-        const isDebug = userStates[chatId].isDebugMode;
-        responseText = extractAndRemoveCommands(responseText, currentSlotState, isDebug);
+        responseText = extractAndRemoveCommands(responseText, currentSlotState);
 
         currentHistory.push({ role: 'user', parts: [textPart, imagePart] });
         currentHistory.push({ role: 'model', parts: [{ text: responseText }] });
@@ -585,8 +389,6 @@ async function handleVisualMedia(bot, msg) {
         
         await sendSplitMessage(bot, chatId, responseText, true);
         await sendRelationshipStats(bot, chatId, currentSlotState);
-
-        setIgnoreTimer(chatId, activeSlotIndex);
 
     } catch (error) {
         console.error(`❌ Ошибка обработки медиа для чата ${chatId}:`, error.message);
@@ -620,12 +422,13 @@ async function handleAnimatedMedia(bot, msg) {
     try {
         let file_id, file_extension, userPrompt;
 
+        // Теперь здесь только гифки (msg.animation)
         if (msg.animation) {
             file_id = msg.animation.file_id;
             file_extension = 'mp4';
             userPrompt = msg.caption || 'Пользователь прислал эту гифку. Опиши свою реакцию на неё.';
         } else {
-            return;
+            return; // Больше ничего не обрабатываем здесь
         }
         
         const fileLink = await bot.getFileLink(file_id);
@@ -674,10 +477,7 @@ async function handleAnimatedMedia(bot, msg) {
         }
         
         let responseText = genResponse.candidates[0].content.parts[0].text;
-
-        // --- ИЗМЕНЕНО: Получаем глобальный флаг отладки и передаем его ---
-        const isDebug = userStates[chatId].isDebugMode;
-        responseText = extractAndRemoveCommands(responseText, currentSlotState, isDebug);
+        responseText = extractAndRemoveCommands(responseText, currentSlotState);
 
         currentHistory.push({ role: 'user', parts: [textPart, imagePart] });
         currentHistory.push({ role: 'model', parts: [{ text: responseText }] });
@@ -685,8 +485,6 @@ async function handleAnimatedMedia(bot, msg) {
         
         await sendSplitMessage(bot, chatId, responseText, true);
         await sendRelationshipStats(bot, chatId, currentSlotState);
-
-        setIgnoreTimer(chatId, activeSlotIndex);
 
     } catch (error) {
         console.error(`❌ Ошибка обработки анимированного медиа для чата ${chatId}:`, error.message);
@@ -698,7 +496,44 @@ async function handleAnimatedMedia(bot, msg) {
 }
 
 
-// ПОЛНАЯ ВЕРСИЯ ДЛЯ ЗАМЕНЫ
+// НОВЫЙ ОБРАБОТЧИК ДЛЯ ГОЛОСА
+async function handleVoiceMessage(msg) {
+    const chatId = msg.chat.id;
+
+    if (!msg.voice) return;
+
+    try {
+        await bot.sendMessage(chatId, '🎙️ Слушаю твоё ГС, секундочку...');
+        await bot.sendChatAction(chatId, 'typing');
+
+        const fileId = msg.voice.file_id;
+        const mimeType = msg.voice.mime_type || 'audio/ogg';
+
+        if (msg.voice.file_size > 14 * 1024 * 1024) { // Лимит ~15MB, ставим с запасом
+            await bot.sendMessage(chatId, "Ой, это голосовое сообщение слишком длинное. Попробуйте записать что-нибудь покороче.");
+            return;
+        }
+        
+        const fileLink = await bot.getFileLink(fileId);
+        const response = await axios({ url: fileLink, responseType: 'arraybuffer' });
+        const audioBuffer = Buffer.from(response.data);
+
+        // Вызываем наш модуль для распознавания речи
+        const transcribedText = await transcribeAudio(genAI, audioBuffer, mimeType);
+
+        if (transcribedText && transcribedText.length > 0) {
+            
+            // Отправляем распознанный текст в основную логику обработки
+            await processUserText(chatId, transcribedText);
+        } else {
+            await bot.sendMessage(chatId, 'Хм, не могу разобрать, чё ты вякнул. Попробуй перезаписать сообщение или напиши текстом.');
+        }
+
+    } catch (error) {
+        console.error(`❌ Ошибка обработки голосового сообщения для чата ${chatId}:`, error.message);
+        await bot.sendMessage(chatId, '🚫 Произошла ошибка при обработке вашего голосового сообщения. Пожалуйста, попробуйте еще раз.');
+    }
+}// ПОЛНАЯ ВЕРСИЯ ДЛЯ ЗАМЕНЫ
 async function handleVoiceMessage(msg) {
     const chatId = msg.chat.id;
 
@@ -737,9 +572,8 @@ async function handleVoiceMessage(msg) {
     }
 }
 
+// НОВАЯ ОБЩАЯ ФУНКЦИЯ ДЛЯ ОБРАБОТКИ ТЕКСТА
 // ПОЛНАЯ ВЕРСИЯ ДЛЯ ЗАМЕНЫ
-// ПОЛНАЯ ИСПРАВЛЕННАЯ ВЕРСИЯ ДЛЯ ЗАМЕНЫ
-
 async function processUserText(chatId, userInput, replyToMessageId) {
     const userState = userStates[chatId];
     const activeSlotIndex = userState.activeChatSlot;
@@ -759,14 +593,12 @@ async function processUserText(chatId, userInput, replyToMessageId) {
     }
     const currentHistory = chatHistories[chatId][activeSlotIndex];
 
-    if (userInput !== '<Игнор от пользователя>') {
-        currentSlotState.spamCounter++;
-        if (currentSlotState.spamCounter > 2) {
-            try {
-                await bot.sendMessage(chatId, 'Ой-ой спамить - не хорошо! 😠 Подожди, когда я договорю.');
-            } catch (error) { /* ignore */ }
-            return;
-        }
+    currentSlotState.spamCounter++;
+    if (currentSlotState.spamCounter > 2) {
+        try {
+            await bot.sendMessage(chatId, 'Ой-ой спамить - не хорошо! 😠 Подожди, когда я договорю.');
+        } catch (error) { /* ignore */ }
+        return;
     }
 
     currentHistory.push({ role: "user", parts: [{ text: userInput }] });
@@ -776,21 +608,10 @@ async function processUserText(chatId, userInput, replyToMessageId) {
     try {
         await bot.sendChatAction(chatId, 'typing');
 
-        // 👇 ВОТ ПРАВИЛЬНЫЙ КОД. ПЕРЕМЕННАЯ ОБЪЯВЛЯЕТСЯ ТОЛЬКО ОДИН РАЗ!
         const contents = currentHistory.map(msg => ({ role: msg.role === "assistant" ? "model" : msg.role, parts: msg.parts }));
-        
-        // +++ НАЧАЛО ИЗМЕНЕНИЙ: Формируем "умный" системный промпт +++
         if (systemPrompt) {
-            let fullSystemPrompt = systemPrompt;
-
-            if (currentSlotState.userBio && currentSlotState.userBio.trim() !== '') {
-                fullSystemPrompt += `\n\n[Важная информация о пользователе (его биография): "${currentSlotState.userBio}"]`;
-                console.log(`[Промпт] Для чата ${chatId}/${activeSlotIndex} добавлена биография.`);
-            }
-
-            contents.unshift({ role: "model", parts: [{ text: `System prompt: ${fullSystemPrompt}` }] });
+            contents.unshift({ role: "model", parts: [{ text: `System prompt: ${systemPrompt}` }] });
         }
-        // +++ КОНЕЦ ИЗМЕНЕНИЙ +++
 
         const model = genAI.getGenerativeModel({ model: GEMINI_MODEL_NAME });
         const result = await model.generateContent({ contents });
@@ -799,9 +620,7 @@ async function processUserText(chatId, userInput, replyToMessageId) {
         if (!response.candidates?.length) throw new Error("Пустой ответ от Gemini API");
 
         let botResponse = response.candidates[0].content.parts[0].text;
-
-        const isDebug = userStates[chatId].isDebugMode;
-        botResponse = extractAndRemoveCommands(botResponse, currentSlotState, isDebug);
+        botResponse = extractAndRemoveCommands(botResponse, currentSlotState);
 
         currentHistory.push({ role: "model", parts: [{ text: botResponse }] });
         saveChatHistory(chatId, activeSlotIndex, currentHistory);
@@ -813,16 +632,15 @@ async function processUserText(chatId, userInput, replyToMessageId) {
             console.log(`История чата ${chatId} сокращена.`);
         }
 
+        // Передаем ID дальше в функцию отправки
         await sendSplitMessage(bot, chatId, botResponse, true, replyToMessageId);
         
         currentSlotState.spamCounter = 0;
         await sendRelationshipStats(bot, chatId, currentSlotState);
 
-        setIgnoreTimer(chatId, activeSlotIndex);
-
     } catch (error) {
         console.error(`❌ Ошибка при работе с ботом:`, error.message, error.stack);
-        await bot.sendMessage(chatId, '🚫 Кажется закончились лимиты, подождите 15 минут. Или возможно цензура не пропускает ваше сообщение).');
+        await bot.sendMessage(chatId, '🚫 Ой, у меня кажется голова разболелась... Попробуй еще раз чуть позже. Команда /clear может помочь.');
         currentSlotState.spamCounter = 0;
     }
 }
@@ -832,45 +650,6 @@ async function processUserText(chatId, userInput, replyToMessageId) {
 bot.on('message', async (msg) => {
     const chatId = msg.chat.id;
     initializeUser(chatId);
-
-    // +++ НАЧАЛО ИСПРАВЛЕННОГО БЛОКА: ЛОВИМ ВВОД БИОГРАФИИ +++
-    const activeSlotIndexForBio = userStates[chatId].activeChatSlot;
-    const slotStateForBio = userStates[chatId].slots[activeSlotIndexForBio];
-
-    if (slotStateForBio.isWaitingForBio) {
-        // ПРОВЕРКА, что пользователь прислал именно текст
-        if (!msg.text) {
-             await bot.sendMessage(chatId, 'Пожалуйста, введи свою биографию текстом, или напиши "Erase" для отмены.');
-             return; // Прерываем обработку, если пришло не-текстовое сообщение
-        }
-        
-        const bioText = msg.text;
-
-        // Отключаем режим ожидания в любом случае
-        slotStateForBio.isWaitingForBio = false;
-
-        if (bioText.toLowerCase() === 'erase') {
-            slotStateForBio.userBio = '';
-            clearChatHistoryAndState(chatId, activeSlotIndexForBio); // Очищаем чат, как и при установке
-            await bot.sendMessage(chatId, '✅ Твоя биография стёрта. Начинаем с чистого листа.');
-            return; // Завершаем обработку
-        }
-
-        if (bioText.length > 300) {
-            await bot.sendMessage(chatId, '❌ Ой, это слишком длинная биография (больше 300 символов). Попробуй еще раз с помощью /set_bio, но покороче.');
-            return; // Завершаем обработку
-        }
-
-        // Сохраняем биографию и очищаем историю
-        slotStateForBio.userBio = bioText;
-        clearChatHistoryAndState(chatId, activeSlotIndexForBio); // Очищаем историю текущего чата
-
-        await bot.sendMessage(chatId, '✅ Отлично, я запомнила твою историю! Теперь можешь начинать общение.');
-        return; // Важно! Завершаем обработку, чтобы текст био не ушел в ИИ как обычное сообщение
-    }
-    // +++ КОНЕЦ ИСПРАВЛЕННОГО БЛОКА +++
-
-    const activeSlotIndexOnMessage = userStates[chatId].activeChatSlot;
 
     if (msg.animation) {
         if (!userStates[chatId].hasCompletedWelcome) {
@@ -900,67 +679,15 @@ bot.on('message', async (msg) => {
     }
 
     const userInput = msg.text;
-    if (!userInput) return;
+    if (!userInput) return; 
 
     if (!(await isChatValid(chatId))) return;
 
-    if (userInput.startsWith('/') && userInput !== '<Игнор от пользователя>') {
-        if (['/start', '/chatlist'].includes(userInput)) return;
-        
-        if (userInput === '/debug') {
-            const userState = userStates[chatId];
-            userState.isDebugMode = !userState.isDebugMode;
-
-            if (userState.isDebugMode) {
-                await bot.sendMessage(chatId, "✅ Включён режим отладки. Команды <> теперь будут видны.");
-            } else {
-                await bot.sendMessage(chatId, "☑️ Режим отладки выключен. Команды <> вновь будут скрыты.");
-            }
-            return;
-        }
-		
-		if (userInput === '/set_bio') {
-            const activeSlotIndex = userStates[chatId].activeChatSlot;
-            const slotState = userStates[chatId].slots[activeSlotIndex];
-            
-            // Включаем режим ожидания
-            slotState.isWaitingForBio = true;
-            
-            const promptMessage = 'Расскажите свою биографию Горепочке (работает в рамках одного чата, также предыдущая история будет стерта) вплоть до 300 символов. Если хотите сбросить вашу биографию, напишите "Erase"';
-            await bot.sendMessage(chatId, promptMessage);
-            return; // Завершаем, чтобы не обрабатывать /set_bio как текст для ИИ
-        }
-		
-
-        if (userInput === '/time') {
-            let publicUrl = process.env.PUBLIC_URL || 'https://your-bot-domain.com';
-            if (publicUrl === 'https://your-bot-domain.com') {
-                console.error("PUBLIC_URL не установлен в .env! Команда /time не будет работать.");
-                await bot.sendMessage(chatId, "Ой, я не могу синхронизироваться, мой создатель не указал мой публичный адрес. ⚙️");
-                return;
-            }
-            
-            // --- НАЧАЛО ИСПРАВЛЕНИЯ ---
-            // Эта строка "чинит" URL, удаляя случайное дублирование протокола
-            publicUrl = publicUrl.replace(/^https:https:\/\//, 'https://').replace(/^http:http:\/\//, 'http://');
-            // --- КОНЕЦ ИСПРАВЛЕНИЯ ---
-
-            const syncUrl = `${publicUrl}/tz-setup?id=${chatId}`;
-            const options = {
-                reply_markup: {
-                    inline_keyboard: [
-                        [{ text: '🕰️ Синхронизировать время', url: syncUrl }]
-                    ]
-                }
-            };
-            await bot.sendMessage(chatId, 'Чтобы я знала, который у тебя час, нажми на кнопку ниже. Откроется страница для быстрой синхронизации.', options);
-            return;
-        }
-        
+    if (userInput.startsWith('/')) {
+        if (['/start', '/chatlist'].includes(userInput)) return; 
         if (userInput === '/clear') {
             const activeSlotIndex = userStates[chatId].activeChatSlot;
             clearChatHistoryAndState(chatId, activeSlotIndex);
-            clearIgnoreTimer(chatId, activeSlotIndex);
             await bot.sendMessage(chatId, `Чат ${activeSlotIndex + 1} очищен 🗑️.`);
             return;
         }
@@ -971,15 +698,7 @@ bot.on('message', async (msg) => {
             else await bot.sendMessage(chatId, `Контекст для чата ${activeSlotIndex + 1} отсутствует.`);
             return;
         }
-        
-		if (userInput === '/credits') {
-            // Используем уже загруженный текст из переменной creditsText
-            // sendSplitMessage отлично подходит, если титры вдруг станут очень длинными
-            await sendSplitMessage(bot, chatId, creditsText, false);
-            return;
-        }
-		
-		if (userInput === '/changes') {
+        if (userInput === '/changes') {
             try {
                 const changelog = fs.readFileSync(CHANGELOG_PATH, 'utf8');
                 await sendSplitMessage(bot, chatId, `📄 Последние изменения:\n${changelog}`, false);
@@ -994,7 +713,7 @@ bot.on('message', async (msg) => {
         return;
     }
 
-    // ВАЖНО: нужно вызвать правильную версию processUserText
+    // Вызываем нашу общую функцию для обработки текста, передавая ID сообщения
     await processUserText(chatId, userInput, msg.message_id);
 });
 
@@ -1037,7 +756,7 @@ async function sendSplitMessage(bot, chatId, originalText, isAiResponseType, rep
         
         const sendMessageAndUpdateFlag = async (textChunk) => {
             if (!(await isChatValid(chatId))) return null;
-            if (!textChunk || !textChunk.trim()) return null;
+            if (!textChunk || !textChunk.trim()) return null; 
 
             const options = createMessageOptions(textChunk);
             const sent = await bot.sendMessage(chatId, textChunk, options);
@@ -1113,7 +832,7 @@ async function sendSplitMessage(bot, chatId, originalText, isAiResponseType, rep
                     if (char === '.' && i + 2 < part.length && part[i + 1] === '.' && part[i + 2] === '.') {
                         eventType = 'ellipsis';
                         currentMessageSegment += part[i + 1] + part[i + 2];
-                        i += 2;
+                        i += 2; 
                     } else if (char === '.' || char === '?' || char === '!') {
                         eventType = 'punctuation';
                     }
@@ -1134,7 +853,7 @@ async function sendSplitMessage(bot, chatId, originalText, isAiResponseType, rep
                                 }
                                 currentMessageSegment = '';
                                 onesSentThisMessage++;
-                                zerosSentThisMessage = 0;
+                                zerosSentThisMessage = 0; 
                                 punctuationEventsInCurrentTextSegment = 0;
                                 await startTyping();
                                 const delay = Math.random() * (3700 - 990) + 990;
@@ -1197,4 +916,4 @@ bot.on('webhook_error', (error) => {
     console.error(`❌ Ошибка вебхука: ${error.message}`);
 });
 
-console.log('ℹ️ Бот Горепочка ожидает команды...');
+console.log('ℹ️ Бот Горепочка ожидает команды...');..');
