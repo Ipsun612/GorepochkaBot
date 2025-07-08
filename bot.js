@@ -9,7 +9,6 @@ const fs = require('fs');
 const path = require('path');
 const axios = require('axios');
 
-
 // Инициализация Google Gemini API
 if (!process.env.GEMINI_API_KEY) {
     console.error('❌ Ошибка: GEMINI_API_KEY не найден в .env файле.');
@@ -100,6 +99,28 @@ function getDefaultSlotState() {
     };
 }
 
+function getChatButtonText(chatId, slotIndex) {
+    const slotState = userStates[chatId].slots[slotIndex];
+    const isActive = userStates[chatId].activeChatSlot === slotIndex;
+    const hasMessages = chatHistories[chatId][slotIndex].length > 0;
+
+    let buttonText = '';
+
+    if (isActive) buttonText += '➡️ ';
+    if (slotState.isBanned) {
+        buttonText += `Чат ${slotIndex + 1} 🔒 Заблокирован`;
+    } else if (!hasMessages) {
+        buttonText += `Слот ${slotIndex + 1} ⭐ (Пусто)`;
+    } else {
+        const icon = '📁';
+        const rel = `❤️ ${slotState.relationshipLevel} (${slotState.relationshipStatus})`;
+        const stress = `⛈️ ${slotState.stressLevel}`;
+        buttonText += `Чат ${slotIndex + 1} ${icon} ${rel} ${stress}`;
+    }
+
+    if (buttonText.length > 64) buttonText = buttonText.substring(0, 61) + '...';
+    return buttonText;
+}
 
 // --- НАЧАЛО БЛОКА: ЛОГИКА ТАЙМЕРА "ИГНОРА" ---
 
@@ -171,14 +192,16 @@ function initializeUser(chatId) {
             activeChatSlot: 0,
             slots: Array(MAX_CHAT_SLOTS).fill(null).map(() => getDefaultSlotState()),
             isDebugMode: false,
-            // --- ДОБАВЛЕНО: Хранилище для смещения часового пояса в минутах ---
-            timezoneOffset: null
+            timezoneOffset: null,
+            // +++ ДОБАВЛЕНО: Глобальное поле для хранения модели пользователя +++
+            selectedModel: process.env.GEMINI_MODEL_NAME || "gemini-2.5-flash" // По умолчанию берем из .env или ставим flash
         };
     }
     if (!chatHistories[chatId]) {
         chatHistories[chatId] = Array(MAX_CHAT_SLOTS).fill(null).map(() => []);
     }
 }
+
 
 function getChatHistoryPath(chatId, slotIndex) {
     return path.join(HISTORY_DIR, `${chatId}_slot_${slotIndex}.json`);
@@ -341,47 +364,96 @@ bot.onText(/\/start/, async (msg) => {
     }
 });
 
+const settingsReplyKeyboard = {
+    keyboard: [
+        [{ text: '🗑️ Очистить историю' }, { text: '🔄 Выбрать чат' }, { text: '🛠️ Режим отладки' }],
+        [{ text: '📝 Установить биографию' }, { text: '🤖 Выбрать модель' }],
+        [{ text: '📤 Экспортировать чат' },{ text: '📥 Импортировать чат' }],
+        [{ text: 'ℹ️ Титры' }, { text: '📄 Изменения' }]
+    ],
+    resize_keyboard: true,
+    one_time_keyboard: false
+};
+
+
+// Модификация обработчика callback_query для поддержки настроек
 bot.on('callback_query', async (callbackQuery) => {
     const chatId = callbackQuery.message.chat.id;
     const data = callbackQuery.data;
     try {
         if (!(await isChatValid(chatId))) return;
         initializeUser(chatId);
+
+        // Обработка выбора модели
+        if (data.startsWith('select_model_')) {
+            const newModel = data.replace('select_model_', '');
+            const userState = userStates[chatId];
+            
+            if (userState.selectedModel === newModel) {
+                await bot.answerCallbackQuery(callbackQuery.id, { text: 'Эта модель уже активна!', show_alert: true });
+                return;
+            }
+
+            userState.selectedModel = newModel;
+            console.log(`[Модель] Пользователь ${chatId} сменил модель на ${newModel}`);
+
+            let confirmationMessage = '';
+            if (newModel.includes('pro')) {
+                confirmationMessage = '✅ Вы выбрали самую мощную модель, но придётся долго ждать генерацию.';
+            } else {
+                confirmationMessage = '✅ Вы выбрали flash версию ИИ, она быстрее, но чуть менее мощная.';
+            }
+
+            await bot.answerCallbackQuery(callbackQuery.id, { text: `Модель изменена на ${newModel}` });
+            await bot.editMessageText(confirmationMessage, {
+                chat_id: chatId,
+                message_id: callbackQuery.message.message_id
+            });
+            return;
+        }
+
+        // Обработка старта чата
         if (data === 'start_chat') {
             userStates[chatId].hasCompletedWelcome = true;
             await bot.answerCallbackQuery(callbackQuery.id);
-            await bot.sendMessage(chatId, `Теперь вы можете начать общение с ботом (в чате 1/${MAX_CHAT_SLOTS}). Используйте /chatlist для выбора другого чата.`);
+            await bot.editMessageReplyMarkup({ inline_keyboard: [] }, {
+                chat_id: chatId,
+                message_id: callbackQuery.message.message_id
+            });
+            await bot.sendMessage(chatId, `Переписка началась (в чате 1/${MAX_CHAT_SLOTS}). Нажмите на кнопку в правом нижнем углу, чтобы настроить бота.`, {
+                reply_markup: settingsReplyKeyboard
+            });
             console.log(`Пользователь ${chatId} нажал "Начать переписываться"`);
-        } else if (data.startsWith('switch_chat_')) {
+            return;
+        }
+
+        // Обработка переключения чатов
+        if (data.startsWith('switch_chat_')) {
             const slotIndex = parseInt(data.split('_')[2]);
             if (slotIndex >= 0 && slotIndex < MAX_CHAT_SLOTS) {
-                
-                // --- ДОБАВЛЕНО: Управление таймерами при переключении ---
-                // 1. Останавливаем таймер для чата, который пользователь покидает.
                 const oldSlotIndex = userStates[chatId].activeChatSlot;
                 clearIgnoreTimer(chatId, oldSlotIndex);
-                // 2. Если в покинутом чате была история, запускаем для него таймер.
                 if (userStates[chatId].slots[oldSlotIndex].interactions > 0) {
                     setIgnoreTimer(chatId, oldSlotIndex);
                 }
-                // --- КОНЕЦ ДОБАВЛЕНИЯ ---
 
                 userStates[chatId].activeChatSlot = slotIndex;
                 if (chatHistories[chatId][slotIndex].length === 0 && fs.existsSync(getChatHistoryPath(chatId, slotIndex))) {
                     chatHistories[chatId][slotIndex] = loadChatHistory(chatId, slotIndex);
                 }
 
-                // --- ДОБАВЛЕНО: Сбрасываем таймер для нового активного чата ---
-                // Это нужно на случай, если для него уже был запущен таймер, пока он был неактивен.
                 clearIgnoreTimer(chatId, slotIndex);
-                // --- КОНЕЦ ДОБАВЛЕНИЯ ---
 
                 await bot.answerCallbackQuery(callbackQuery.id, { text: `Переключено на чат ${slotIndex + 1}` });
-                await bot.sendMessage(chatId, `Вы переключились на чат ${slotIndex + 1}.`);
+                await bot.deleteMessage(chatId, callbackQuery.message.message_id);
+                await bot.sendMessage(chatId, `Вы переключились на чат ${slotIndex + 1}.`, {
+                    reply_markup: settingsReplyKeyboard
+                });
                 console.log(`Пользователь ${chatId} переключился на чат ${slotIndex + 1}`);
             } else {
                 await bot.answerCallbackQuery(callbackQuery.id, { text: 'Ошибка выбора чата', show_alert: true });
             }
+            return;
         }
     } catch (error) {
         console.error(`❌ Ошибка в callback_query (${chatId}):`, error.message);
@@ -391,44 +463,42 @@ bot.on('callback_query', async (callbackQuery) => {
     }
 });
 
-// Новая версия
 function extractAndRemoveCommands(text, slotState, isDebugMode) {
     let modifiedText = text;
     const patterns = [
-        // +++ ИЗМЕНЕНО: Диапазон теперь от -100 до 100
-        { regex: /<Повысить уровень отношений на (\d+)>/g, action: (amount) => slotState.relationshipLevel = Math.min(100, slotState.relationshipLevel + parseInt(amount)) },
-        { regex: /<Понизить уровень отношений на (\d+)>/g, action: (amount) => slotState.relationshipLevel = Math.max(-100, slotState.relationshipLevel - parseInt(amount)) },
-        
-        // +++ ДОБАВЛЕНО: Новая команда для смены текстового статуса
+        {
+            regex: /<Уровень доверия\s*=\s*(-?\d+)>/g,
+            action: (value) => {
+                const newValue = parseInt(value, 10);
+                slotState.relationshipLevel = Math.max(-100, Math.min(100, newValue));
+            }
+        },
         { regex: /<Изменить статус отношений на:\s*(.*?)>/g, action: (status) => slotState.relationshipStatus = status.trim() },
-
-        // Остальные команды без изменений
-        { regex: /<Повысить стресс на (\d+)>/g, action: (amount) => slotState.stressLevel = Math.min(100, slotState.stressLevel + parseInt(amount)) },
-        { regex: /<Понизить стресс на (\d+)>/g, action: (amount) => slotState.stressLevel = Math.max(0, slotState.stressLevel - parseInt(amount)) },
+        {
+            regex: /<Стресс\s*=\s*(\d+)>/g,
+            action: (value) => {
+                const newValue = parseInt(value, 10);
+                slotState.stressLevel = Math.max(0, Math.min(100, newValue));
+            }
+        },
         { regex: /<Дать бан>/g, action: () => slotState.isBanned = true },
         { regex: /<Пользователь попрощался>/g, action: () => { slotState.ignoreState = 'goodbye'; console.log(`Статус одного из чатов изменен на 'goodbye'`); } },
         { regex: /<Пользователь в сети>/g, action: () => { slotState.ignoreState = 'default'; console.log(`Статус одного из чатов изменен на 'default'`); } },
+        // Команда <Разделить сообщение> не добавлена в patterns, так как не требует обработки состояния
     ];
 
     patterns.forEach(pattern => {
-        // Используем глобальный флаг 'g' для поиска всех вхождений
         const regex = new RegExp(pattern.regex.source, 'g');
         let match;
         while ((match = regex.exec(text)) !== null) {
-            // match[1] - это захваченная группа (цифра или текст статуса)
             const value = match[1];
             pattern.action(value);
         }
-
-        // Удаляем команду из текста, если не включен режим отладки
-        if (!isDebugMode) {
-            modifiedText = modifiedText.replace(regex, '');
-        }
     });
 
-    // Очистка текста от лишних тегов и пробелов, если не в режиме отладки
+    // Удаляем команды, кроме <Разделить сообщение>, если не в режиме отладки
     if (!isDebugMode) {
-        modifiedText = modifiedText.replace(/<.*?>/g, '');
+        modifiedText = modifiedText.replace(/<(?!Разделить сообщение\b)[^>]*>/g, '');
         modifiedText = modifiedText.replace(/\s{2,}/g, ' ').trim();
     } else {
         modifiedText = modifiedText.trim();
@@ -437,56 +507,237 @@ function extractAndRemoveCommands(text, slotState, isDebugMode) {
     return modifiedText;
 }
 
-bot.onText(/\/chatlist/, async (msg) => {
+bot.on('message', async (msg) => {
     const chatId = msg.chat.id;
-    if (!(await isChatValid(chatId))) return;
-    initializeUser(chatId); // Убедимся, что пользователь и его слоты инициализированы
+    initializeUser(chatId);
 
-    const userState = userStates[chatId];
-    const buttons = [];
+    const activeSlotIndex = userStates[chatId].activeChatSlot;
+    const slotState = userStates[chatId].slots[activeSlotIndex];
 
-    // Проходим по каждому слоту, чтобы создать для него кнопку
-    for (let i = 0; i < MAX_CHAT_SLOTS; i++) {
-        const slotData = userState.slots[i];
-        
-        // Проверяем, есть ли у слота какая-либо история (в памяти или на диске)
-        const hasHistoryFile = fs.existsSync(getChatHistoryPath(chatId, i));
-        const hasInteractions = slotData && slotData.interactions > 0;
-        const isUsed = hasHistoryFile || hasInteractions;
-
-        let buttonText = '';
-
-        // Логика построения текста на кнопке. Порядок важен!
-        // 1. Сначала проверяем на блокировку, так как это самый критичный статус.
-        if (slotData.isBanned) {
-            // Если пользователь сейчас активен в заблокированном чате, помечаем это стрелкой.
-            const activeMarker = (i === userState.activeChatSlot) ? '➡️ ' : '';
-            // Текст четко говорит о статусе.
-            buttonText = `${activeMarker}Чат ${i + 1} 🔒 Заблокирован`;
-        
-        // 2. Если не заблокирован, проверяем, активен ли он сейчас.
-        } else if (i === userState.activeChatSlot) {
-            // +++ ИСПРАВЛЕНО: Добавляем текстовый статус в скобках
-            buttonText = `➡️ Чат ${i + 1} ✨ ❤️${slotData.relationshipLevel} (${slotData.relationshipStatus}) ⛈️${slotData.stressLevel}`;
-        
-        // 3. Если не заблокирован и не активен, но был использован.
-        } else if (isUsed) {
-             // +++ ИСПРАВЛЕНО: Добавляем текстовый статус в скобках
-            buttonText = `Чат ${i + 1} 📂 ❤️${slotData.relationshipLevel} (${slotData.relationshipStatus}) ⛈️${slotData.stressLevel}`;
-        
-        // 4. Если ничего из вышеперечисленного, значит, слот пуст.
-        } else {
-            // Четко обозначаем пустой слот, приглашая начать новый диалог.
-            buttonText = `Слот ${i + 1} ➕ (Пусто)`;
+    // Проверка режима ожидания
+    if (slotState.isWaitingForBio) {
+        if (!msg.text) {
+            await bot.sendMessage(chatId, 'Пожалуйста, введи свою биографию текстом, или напиши /cancel для отмены.', {
+                reply_markup: settingsReplyKeyboard
+            });
+            return;
         }
-        
-        // Добавляем готовую кнопку в массив
-        buttons.push([{ text: buttonText, callback_data: `switch_chat_${i}` }]);
+        if (msg.text.toLowerCase() === '/cancel') {
+            slotState.isWaitingForBio = false;
+            await bot.sendMessage(chatId, '✅ Ввод биографии отменен.', {
+                reply_markup: settingsReplyKeyboard
+            });
+            return;
+        }
+        const bioText = msg.text;
+        slotState.isWaitingForBio = false;
+        if (bioText.toLowerCase() === 'erase') {
+            slotState.userBio = '';
+            clearChatHistoryAndState(chatId, activeSlotIndex);
+            await bot.sendMessage(chatId, '✅ Твоя биография стёрта. Начинаем с чистого листа.', {
+                reply_markup: settingsReplyKeyboard
+            });
+            return;
+        }
+        if (bioText.length > 300) {
+            await bot.sendMessage(chatId, '❌ Ой, это слишком длинная биография (больше 300 символов). Попробуй еще раз с помощью /set_bio, но покороче.', {
+                reply_markup: settingsReplyKeyboard
+            });
+            return;
+        }
+        slotState.userBio = bioText;
+        clearChatHistoryAndState(chatId, activeSlotIndex);
+        await bot.sendMessage(chatId, '✅ Отлично, я запомнила твою историю! Теперь можешь начинать общение.', {
+            reply_markup: settingsReplyKeyboard
+        });
+        return;
     }
 
-    const options = { reply_markup: { inline_keyboard: buttons } };
-    await bot.sendMessage(chatId, '🗂️ Выберите или переключите чат:', options);
-    console.log(`Пользователь ${chatId} запросил обновленный /chatlist`);
+    if (slotState.isWaitingForImportFile) {
+        if (msg.text && msg.text.toLowerCase() === '/cancel') {
+            slotState.isWaitingForImportFile = false;
+            await bot.sendMessage(chatId, '✅ Импорт отменен.', {
+                reply_markup: settingsReplyKeyboard
+            });
+            return;
+        }
+        await processImportFile(bot, msg);
+        return;
+    }
+
+    if (msg.animation || msg.photo || (msg.document && msg.document.mime_type.startsWith('image/')) || msg.sticker || msg.voice) {
+        if (!userStates[chatId].hasCompletedWelcome) {
+            await showWelcomeMessage(chatId);
+            return;
+        }
+        if (msg.animation) return await handleAnimatedMedia(bot, msg);
+        if (msg.photo || (msg.document && msg.document.mime_type.startsWith('image/')) || msg.sticker) return await handleVisualMedia(bot, msg);
+        if (msg.voice) return await handleVoiceMessage(msg);
+        return;
+    }
+
+    const userInput = msg.text;
+    if (!userInput) return;
+
+    if (!(await isChatValid(chatId))) return;
+
+    // Обработка настроек через reply-клавиатуру
+    if (userInput === '🗑️ Очистить историю') {
+        clearChatHistoryAndState(chatId, activeSlotIndex);
+        clearIgnoreTimer(chatId, activeSlotIndex);
+        await bot.sendMessage(chatId, `Чат ${activeSlotIndex + 1} очищен 🗑️.`, {
+            reply_markup: settingsReplyKeyboard
+        });
+        return;
+    }
+    if (userInput === '🛠️ Режим отладки') {
+        userStates[chatId].isDebugMode = !userStates[chatId].isDebugMode;
+        await bot.sendMessage(chatId, userStates[chatId].isDebugMode
+            ? "✅ Включён режим отладки. Команды <> теперь будут видны."
+            : "☑️ Режим отладки выключен. Команды <> вновь будут скрыты.", {
+                reply_markup: settingsReplyKeyboard
+            });
+        return;
+    }
+    if (userInput === '🔄 Выбрать чат') {
+        const keyboard = {
+            keyboard: [
+                [
+                    { text: getChatButtonText(chatId, 0) },
+                    { text: getChatButtonText(chatId, 1) },
+                    { text: getChatButtonText(chatId, 2) }
+                ],
+                [
+                    { text: getChatButtonText(chatId, 3) },
+                    { text: getChatButtonText(chatId, 4) },
+                    { text: getChatButtonText(chatId, 5) }
+                ],
+                [
+                    { text: getChatButtonText(chatId, 6) },
+                    { text: getChatButtonText(chatId, 7) },
+                    { text: '🔙 Назад' }
+                ]
+            ],
+            resize_keyboard: true,
+            one_time_keyboard: false
+        };
+        await bot.sendMessage(chatId, 'Выберите чат:', { reply_markup: keyboard });
+        return;
+    }
+
+    if (userInput.startsWith('➡️ Чат ') || userInput.startsWith('Чат ') || userInput.startsWith('Слот ')) {
+        const match = userInput.match(/(\d+)/);
+        if (match) {
+            const slotIndex = parseInt(match[1]) - 1;
+            if (slotIndex >= 0 && slotIndex < MAX_CHAT_SLOTS) {
+                const slotState = userStates[chatId].slots[slotIndex];
+                if (slotState.isBanned) {
+                    await bot.sendMessage(chatId, 'Этот чат заблокирован.', { reply_markup: settingsReplyKeyboard });
+                    return;
+                }
+                const oldSlotIndex = userStates[chatId].activeChatSlot;
+                clearIgnoreTimer(chatId, oldSlotIndex);
+                if (userStates[chatId].slots[oldSlotIndex].interactions > 0) {
+                    setIgnoreTimer(chatId, oldSlotIndex);
+                }
+                userStates[chatId].activeChatSlot = slotIndex;
+                if (chatHistories[chatId][slotIndex].length === 0 && fs.existsSync(getChatHistoryPath(chatId, slotIndex))) {
+                    chatHistories[chatId][slotIndex] = loadChatHistory(chatId, slotIndex);
+                }
+                clearIgnoreTimer(chatId, slotIndex);
+                await bot.sendMessage(chatId, `Вы переключились на чат ${slotIndex + 1}.`, {
+                    reply_markup: settingsReplyKeyboard
+                });
+                console.log(`Пользователь ${chatId} переключился на чат ${slotIndex + 1}`);
+                await sendRelationshipStats(bot, chatId, userStates[chatId].slots[slotIndex]);
+            } else {
+                await bot.sendMessage(chatId, 'Ошибка выбора чата.', { reply_markup: settingsReplyKeyboard });
+            }
+        }
+        return;
+    }
+
+    if (userInput === '🔙 Назад') {
+        await bot.sendMessage(chatId, 'Возвращаемся к настройкам.', { reply_markup: settingsReplyKeyboard });
+        return;
+    }
+    if (userInput === '📝 Установить биографию') {
+        slotState.isWaitingForBio = true;
+        await bot.sendMessage(chatId, 'Расскажи свою биографию Горепочке (до 300 символов). Если хочешь сбросить биографию, напиши "Erase". Для отмены напиши /cancel.', {
+            reply_markup: settingsReplyKeyboard
+        });
+        return;
+    }
+    if (userInput === '📤 Экспортировать чат') {
+        await handleExport(bot, chatId);
+        return;
+    }
+    if (userInput === '📥 Импортировать чат') {
+        slotState.isWaitingForImportFile = true;
+        await bot.sendMessage(chatId, 'Пришлите JSON-файл, экспортированный ранее. Для отмены напишите /cancel.', {
+            reply_markup: settingsReplyKeyboard
+        });
+        return;
+    }
+    if (userInput === '🤖 Выбрать модель') {
+        const modelKeyboard = {
+            keyboard: [
+                [{ text: '🧠 gemini-2.5-pro' }, { text: '⚡ gemini-2.5-flash' }]
+            ],
+            resize_keyboard: true,
+            one_time_keyboard: true
+        };
+        await bot.sendMessage(chatId, 'Выберите модель:', {
+            reply_markup: modelKeyboard
+        });
+        return;
+    }
+    if (userInput === 'ℹ️ Титры') {
+        await bot.sendMessage(chatId, creditsText, { parse_mode: 'Markdown', reply_markup: settingsReplyKeyboard });
+        return;
+    }
+    if (userInput === '📄 Изменения') {
+        try {
+            const changelog = fs.readFileSync(CHANGELOG_PATH, 'utf8');
+            await bot.sendMessage(chatId, `📄 Последние изменения:\n${changelog}`, { parse_mode: 'Markdown', reply_markup: settingsReplyKeyboard });
+        } catch (error) {
+            await bot.sendMessage(chatId, '❌ Не удалось загрузить список изменений.', {
+                reply_markup: settingsReplyKeyboard
+            });
+        }
+        return;
+    }
+    if (userInput === '🧠 gemini-2.5-pro' || userInput === '⚡ gemini-2.5-flash') {
+        const newModel = userInput.includes('pro') ? 'gemini-2.5-pro' : 'gemini-2.5-flash';
+        if (userStates[chatId].selectedModel === newModel) {
+            await bot.sendMessage(chatId, 'Эта модель уже активна!', {
+                reply_markup: settingsReplyKeyboard
+            });
+        } else {
+            userStates[chatId].selectedModel = newModel;
+            await bot.sendMessage(chatId, newModel.includes('pro')
+                ? '✅ Вы выбрали самую мощную модель, но придётся долго ждать генерацию.'
+                : '✅ Вы выбрали flash версию ИИ, она быстрее, но чуть менее мощная.', {
+                    reply_markup: settingsReplyKeyboard
+                });
+        }
+        return;
+    }
+
+    // Проверка неподдерживаемых команд
+    if (userInput.startsWith('/')) {
+        if (!['/start', '/chatlist'].includes(userInput)) {
+            await bot.sendMessage(chatId, 'Эта команда не поддерживается. Используйте reply-клавиатуру для настроек.');
+            return;
+        }
+    }
+
+    if (!userStates[chatId].hasCompletedWelcome) {
+        await showWelcomeMessage(chatId);
+        return;
+    }
+
+    await processUserText(chatId, userInput, msg.message_id);
 });
 
 // --- ОБРАБОТЧИКИ МЕДИА ---
@@ -561,7 +812,12 @@ async function handleVisualMedia(bot, msg) {
         currentSlotState.interactions++;
         currentSlotState.lastActive = Date.now();
 
-        const model = genAI.getGenerativeModel({ model: GEMINI_MODEL_NAME });
+        // +++ ИЗМЕНЕНО: Используем персональную модель пользователя +++
+        const selectedModel = userStates[chatId].selectedModel;
+        const model = genAI.getGenerativeModel({ model: selectedModel });
+        console.log(`[Модель] Чат ${chatId} использует модель: ${selectedModel}`);
+
+
         const result = await model.generateContent({ contents });
         const response = await result.response;
 
@@ -571,7 +827,6 @@ async function handleVisualMedia(bot, msg) {
         
         let responseText = response.candidates[0].content.parts[0].text;
         
-        // --- ИЗМЕНЕНО: Получаем глобальный флаг отладки и передаем его ---
         const isDebug = userStates[chatId].isDebugMode;
         responseText = extractAndRemoveCommands(responseText, currentSlotState, isDebug);
 
@@ -661,7 +916,11 @@ async function handleAnimatedMedia(bot, msg) {
         currentSlotState.interactions++;
         currentSlotState.lastActive = Date.now();
 
-        const model = genAI.getGenerativeModel({ model: GEMINI_MODEL_NAME });
+        // +++ ИЗМЕНЕНО: Используем персональную модель пользователя +++
+        const selectedModel = userStates[chatId].selectedModel;
+        const model = genAI.getGenerativeModel({ model: selectedModel });
+        console.log(`[Модель] Чат ${chatId} использует модель: ${selectedModel}`);
+
         const result = await model.generateContent({ contents });
         const genResponse = await result.response;
 
@@ -671,7 +930,6 @@ async function handleAnimatedMedia(bot, msg) {
         
         let responseText = genResponse.candidates[0].content.parts[0].text;
 
-        // --- ИЗМЕНЕНО: Получаем глобальный флаг отладки и передаем его ---
         const isDebug = userStates[chatId].isDebugMode;
         responseText = extractAndRemoveCommands(responseText, currentSlotState, isDebug);
 
@@ -772,10 +1030,8 @@ async function processUserText(chatId, userInput, replyToMessageId) {
     try {
         await bot.sendChatAction(chatId, 'typing');
 
-        // 👇 ВОТ ПРАВИЛЬНЫЙ КОД. ПЕРЕМЕННАЯ ОБЪЯВЛЯЕТСЯ ТОЛЬКО ОДИН РАЗ!
         const contents = currentHistory.map(msg => ({ role: msg.role === "assistant" ? "model" : msg.role, parts: msg.parts }));
         
-        // +++ НАЧАЛО ИЗМЕНЕНИЙ: Формируем "умный" системный промпт +++
         if (systemPrompt) {
             let fullSystemPrompt = systemPrompt;
 
@@ -786,9 +1042,12 @@ async function processUserText(chatId, userInput, replyToMessageId) {
 
             contents.unshift({ role: "model", parts: [{ text: `System prompt: ${fullSystemPrompt}` }] });
         }
-        // +++ КОНЕЦ ИЗМЕНЕНИЙ +++
 
-        const model = genAI.getGenerativeModel({ model: GEMINI_MODEL_NAME });
+        // +++ ИЗМЕНЕНО: Используем персональную модель пользователя +++
+        const selectedModel = userStates[chatId].selectedModel;
+        const model = genAI.getGenerativeModel({ model: selectedModel });
+        console.log(`[Модель] Чат ${chatId} использует модель: ${selectedModel}`);
+        
         const result = await model.generateContent({ contents });
         const response = await result.response;
 
@@ -823,176 +1082,6 @@ async function processUserText(chatId, userInput, replyToMessageId) {
     }
 }
 
-
-// ПОЛНАЯ ВЕРСИЯ ДЛЯ ЗАМЕНЫ
-bot.on('message', async (msg) => {
-    const chatId = msg.chat.id;
-    initializeUser(chatId);
-
-    // +++ НАЧАЛО ИСПРАВЛЕННОГО БЛОКА: ЛОВИМ ВВОД БИОГРАФИИ +++
-    const activeSlotIndexForBio = userStates[chatId].activeChatSlot;
-    const slotStateForBio = userStates[chatId].slots[activeSlotIndexForBio];
-
-    if (slotStateForBio.isWaitingForBio) {
-        // ПРОВЕРКА, что пользователь прислал именно текст
-        if (!msg.text) {
-             await bot.sendMessage(chatId, 'Пожалуйста, введи свою биографию текстом, или напиши "Erase" для отмены.');
-             return; // Прерываем обработку, если пришло не-текстовое сообщение
-        }
-        
-        const bioText = msg.text;
-
-        // Отключаем режим ожидания в любом случае
-        slotStateForBio.isWaitingForBio = false;
-
-        if (bioText.toLowerCase() === 'erase') {
-            slotStateForBio.userBio = '';
-            clearChatHistoryAndState(chatId, activeSlotIndexForBio); // Очищаем чат, как и при установке
-            await bot.sendMessage(chatId, '✅ Твоя биография стёрта. Начинаем с чистого листа.');
-            return; // Завершаем обработку
-        }
-
-        if (bioText.length > 300) {
-            await bot.sendMessage(chatId, '❌ Ой, это слишком длинная биография (больше 300 символов). Попробуй еще раз с помощью /set_bio, но покороче.');
-            return; // Завершаем обработку
-        }
-
-        // Сохраняем биографию и очищаем историю
-        slotStateForBio.userBio = bioText;
-        clearChatHistoryAndState(chatId, activeSlotIndexForBio); // Очищаем историю текущего чата
-
-        await bot.sendMessage(chatId, '✅ Отлично, я запомнила твою историю! Теперь можешь начинать общение.');
-        return; // Важно! Завершаем обработку, чтобы текст био не ушел в ИИ как обычное сообщение
-    }
-    // +++ КОНЕЦ ИСПРАВЛЕННОГО БЛОКА +++
-
-    const activeSlotIndexOnMessage = userStates[chatId].activeChatSlot;
-
-    if (msg.animation) {
-        if (!userStates[chatId].hasCompletedWelcome) {
-            await showWelcomeMessage(chatId);
-            return;
-        }
-        await handleAnimatedMedia(bot, msg);
-        return;
-    }
-
-    if (msg.photo || (msg.document && msg.document.mime_type.startsWith('image/')) || msg.sticker) {
-        if (!userStates[chatId].hasCompletedWelcome) {
-            await showWelcomeMessage(chatId);
-            return;
-        }
-        await handleVisualMedia(bot, msg);
-        return;
-    }
-    
-    if (msg.voice) {
-        if (!userStates[chatId].hasCompletedWelcome) {
-            await showWelcomeMessage(chatId);
-            return;
-        }
-        await handleVoiceMessage(msg);
-        return;
-    }
-
-    const userInput = msg.text;
-    if (!userInput) return;
-
-    if (!(await isChatValid(chatId))) return;
-
-    if (userInput.startsWith('/') && userInput !== '<Игнор от пользователя>') {
-        if (['/start', '/chatlist'].includes(userInput)) return;
-        
-        if (userInput === '/debug') {
-            const userState = userStates[chatId];
-            userState.isDebugMode = !userState.isDebugMode;
-
-            if (userState.isDebugMode) {
-                await bot.sendMessage(chatId, "✅ Включён режим отладки. Команды <> теперь будут видны.");
-            } else {
-                await bot.sendMessage(chatId, "☑️ Режим отладки выключен. Команды <> вновь будут скрыты.");
-            }
-            return;
-        }
-		
-		if (userInput === '/set_bio') {
-            const activeSlotIndex = userStates[chatId].activeChatSlot;
-            const slotState = userStates[chatId].slots[activeSlotIndex];
-            
-            // Включаем режим ожидания
-            slotState.isWaitingForBio = true;
-            
-            const promptMessage = 'Расскажите свою биографию Горепочке (работает в рамках одного чата, также предыдущая история будет стерта) вплоть до 300 символов. Если хотите сбросить вашу биографию, напишите "Erase"';
-            await bot.sendMessage(chatId, promptMessage);
-            return; // Завершаем, чтобы не обрабатывать /set_bio как текст для ИИ
-        }
-		
-
-        if (userInput === '/time') {
-            let publicUrl = process.env.PUBLIC_URL || 'https://your-bot-domain.com';
-            if (publicUrl === 'https://your-bot-domain.com') {
-                console.error("PUBLIC_URL не установлен в .env! Команда /time не будет работать.");
-                await bot.sendMessage(chatId, "Ой, я не могу синхронизироваться, мой создатель не указал мой публичный адрес. ⚙️");
-                return;
-            }
-            
-            // --- НАЧАЛО ИСПРАВЛЕНИЯ ---
-            // Эта строка "чинит" URL, удаляя случайное дублирование протокола
-            publicUrl = publicUrl.replace(/^https:https:\/\//, 'https://').replace(/^http:http:\/\//, 'http://');
-            // --- КОНЕЦ ИСПРАВЛЕНИЯ ---
-
-            const syncUrl = `${publicUrl}/tz-setup?id=${chatId}`;
-            const options = {
-                reply_markup: {
-                    inline_keyboard: [
-                        [{ text: '🕰️ Синхронизировать время', url: syncUrl }]
-                    ]
-                }
-            };
-            await bot.sendMessage(chatId, 'Чтобы я знала, который у тебя час, нажми на кнопку ниже. Откроется страница для быстрой синхронизации.', options);
-            return;
-        }
-        
-        if (userInput === '/clear') {
-            const activeSlotIndex = userStates[chatId].activeChatSlot;
-            clearChatHistoryAndState(chatId, activeSlotIndex);
-            clearIgnoreTimer(chatId, activeSlotIndex);
-            await bot.sendMessage(chatId, `Чат ${activeSlotIndex + 1} очищен 🗑️.`);
-            return;
-        }
-        if (userInput === '/context') {
-            const activeSlotIndex = userStates[chatId].activeChatSlot;
-            const filePath = getChatHistoryPath(chatId, activeSlotIndex);
-            if (fs.existsSync(filePath)) await bot.sendDocument(chatId, fs.createReadStream(filePath));
-            else await bot.sendMessage(chatId, `Контекст для чата ${activeSlotIndex + 1} отсутствует.`);
-            return;
-        }
-        
-		if (userInput === '/credits') {
-            // Используем уже загруженный текст из переменной creditsText
-            // sendSplitMessage отлично подходит, если титры вдруг станут очень длинными
-            await sendSplitMessage(bot, chatId, creditsText, false);
-            return;
-        }
-		
-		if (userInput === '/changes') {
-            try {
-                const changelog = fs.readFileSync(CHANGELOG_PATH, 'utf8');
-                await sendSplitMessage(bot, chatId, `📄 Последние изменения:\n${changelog}`, false);
-            } catch (error) { await bot.sendMessage(chatId, '❌ Не удалось загрузить список изменений.'); }
-            return;
-        }
-        return;
-    }
-    
-    if (!userStates[chatId].hasCompletedWelcome) {
-        await showWelcomeMessage(chatId);
-        return;
-    }
-
-    // ВАЖНО: нужно вызвать правильную версию processUserText
-    await processUserText(chatId, userInput, msg.message_id);
-});
 
 
 // ПОЛНАЯ ВЕРСИЯ ДЛЯ ЗАМЕНЫ
@@ -1030,7 +1119,7 @@ async function sendSplitMessage(bot, chatId, originalText, isAiResponseType, rep
             }
             return options;
         };
-        
+
         const sendMessageAndUpdateFlag = async (textChunk) => {
             if (!(await isChatValid(chatId))) return null;
             if (!textChunk || !textChunk.trim()) return null;
@@ -1041,122 +1130,29 @@ async function sendSplitMessage(bot, chatId, originalText, isAiResponseType, rep
             return sent;
         };
 
-        if (!isAiResponseType) {
-            if (originalText.length <= 4096) {
-                const sent = await sendMessageAndUpdateFlag(originalText);
-                if(sent) messageIds.push(sent.message_id);
-            } else {
-                const chunks = originalText.match(/([\s\S]|[\r\n]){1,4096}/g) || [];
-                for (const chunk of chunks) {
-                    const sent = await sendMessageAndUpdateFlag(chunk);
-                    if(sent) messageIds.push(sent.message_id);
-                    await new Promise(resolve => setTimeout(resolve, 700));
-                }
-            }
-            stopTyping();
-            return messageIds;
-        }
+        // Разделяем текст по команде <Разделить сообщение>
+        const parts = originalText.split(/<Разделить сообщение>/g);
 
-        if (originalText.length <= 85) {
-            const partsForShortAi = originalText.split(/(```[\s\S]*?```)/gs);
-            for (const part of partsForShortAi) {
-                if(part.trim()){
-                    const sent = await sendMessageAndUpdateFlag(part);
-                    if(sent) messageIds.push(sent.message_id);
-                }
-            }
-            stopTyping();
-            return messageIds;
-        }
+        // Среднее время на символ в миллисекундах (можно настроить)
+        const timePerCharacter = 62; // 100 мс на символ
 
-        let zerosSentThisMessage = 0;
-        let onesSentThisMessage = 0;
-        const textAndCodeParts = originalText.split(/(```[\s\S]*?```)/gs);
-        let currentMessageSegment = '';
-        let punctuationEventsInCurrentTextSegment = 0;
-
-        for (const part of textAndCodeParts) {
+        for (const part of parts) {
             if (!(await isChatValid(chatId))) { stopTyping(); return messageIds; }
-            if (part.startsWith('```') && part.endsWith('```')) {
-                if (currentMessageSegment.trim()) {
-                    const sent = await sendMessageAndUpdateFlag(currentMessageSegment.trim());
-                    if (sent) messageIds.push(sent.message_id);
-                    currentMessageSegment = '';
-                    punctuationEventsInCurrentTextSegment = 0;
-                    await new Promise(resolve => setTimeout(resolve, 300));
-                }
-                if (part.length <= 4096) {
-                    const sent = await sendMessageAndUpdateFlag(part);
-                    if (sent) messageIds.push(sent.message_id);
-                } else {
-                    const codeChunks = part.match(/([\s\S]|[\r\n]){1,4090}/g) || [];
-                    for (let k = 0; k < codeChunks.length; k++) {
-                        if (!(await isChatValid(chatId))) { stopTyping(); return messageIds; }
-                        let chunkToSend = codeChunks[k];
-                        if (k === 0 && !chunkToSend.startsWith("```")) chunkToSend = "```\n" + chunkToSend;
-                        if (k === codeChunks.length - 1 && !chunkToSend.endsWith("```")) chunkToSend = chunkToSend + "\n```";
-                        const sent = await sendMessageAndUpdateFlag(chunkToSend);
-                        if (sent) messageIds.push(sent.message_id);
-                        await new Promise(resolve => setTimeout(resolve, 700));
-                    }
-                }
-                punctuationEventsInCurrentTextSegment = 0;
-            } else {
-                for (let i = 0; i < part.length; i++) {
-                    const char = part[i];
-                    currentMessageSegment += char;
-                    let eventType = null;
-                    if (char === '.' && i + 2 < part.length && part[i + 1] === '.' && part[i + 2] === '.') {
-                        eventType = 'ellipsis';
-                        currentMessageSegment += part[i + 1] + part[i + 2];
-                        i += 2;
-                    } else if (char === '.' || char === '?' || char === '!') {
-                        eventType = 'punctuation';
-                    }
 
-                    if (eventType) {
-                        punctuationEventsInCurrentTextSegment++;
-                        if (punctuationEventsInCurrentTextSegment >= 2) {
-                            let makeSplitDecision = false;
-                            const canSplit = onesSentThisMessage < 3;
-                            if (canSplit && Math.random() > 0.5) {
-                                makeSplitDecision = true;
-                            }
+            // Удаляем текст внутри любых команд <...> для подсчета символов
+            const textWithoutCommands = part.replace(/<.*?>/g, '');
 
-                            if (makeSplitDecision) {
-                                if (currentMessageSegment.trim()) {
-                                    const sent = await sendMessageAndUpdateFlag(currentMessageSegment.trim());
-                                    if (sent) messageIds.push(sent.message_id);
-                                }
-                                currentMessageSegment = '';
-                                onesSentThisMessage++;
-                                zerosSentThisMessage = 0;
-                                punctuationEventsInCurrentTextSegment = 0;
-                                await startTyping();
-                                const delay = Math.random() * (3700 - 990) + 990;
-                                await new Promise(resolve => setTimeout(resolve, Math.floor(delay)));
-                            } else {
-                                zerosSentThisMessage++;
-                            }
-                        }
-                    }
-                    if (currentMessageSegment.length >= 4050) {
-                        if (!(await isChatValid(chatId))) { stopTyping(); return messageIds; }
-                        const sent = await sendMessageAndUpdateFlag(currentMessageSegment.trim());
-                        if (sent) messageIds.push(sent.message_id);
-                        currentMessageSegment = '';
-                        punctuationEventsInCurrentTextSegment = 0;
-                        await startTyping();
-                        await new Promise(resolve => setTimeout(resolve, 300));
-                    }
-                }
-            }
-        }
-        if (currentMessageSegment.trim()) {
-            if (!(await isChatValid(chatId))) { stopTyping(); return messageIds; }
-            const sent = await sendMessageAndUpdateFlag(currentMessageSegment.trim());
+            // Вычисляем задержку на основе количества символов
+            const delay = textWithoutCommands.length * timePerCharacter;
+
+            // Ждем задержку перед отправкой части
+            await new Promise(resolve => setTimeout(resolve, delay));
+
+            // Отправляем часть
+            const sent = await sendMessageAndUpdateFlag(part);
             if (sent) messageIds.push(sent.message_id);
         }
+
         stopTyping();
         return messageIds;
     } catch (error) {
@@ -1176,6 +1172,128 @@ async function sendSplitMessage(bot, chatId, originalText, isAiResponseType, rep
             console.error(`❌ Не удалось отправить сообщение об ошибке отправки (${chatId}):`, sendError.message);
         }
         return messageIds;
+    }
+}
+
+async function handleExport(bot, chatId) {
+    try {
+        initializeUser(chatId);
+        const userState = userStates[chatId];
+        const activeSlotIndex = userState.activeChatSlot;
+
+        const currentSlotState = userState.slots[activeSlotIndex];
+        const currentHistory = chatHistories[chatId][activeSlotIndex];
+
+        // +++ НАЧАЛО ИСПРАВЛЕНИЯ: Исключаем таймер из экспорта +++
+        // Создаем поверхностную копию состояния слота, чтобы не изменять оригинал
+        const stateToExport = { ...currentSlotState };
+        // Удаляем из КОПИИ свойство с таймером, которое вызывает ошибку "circular structure"
+        delete stateToExport.ignoreTimer;
+        // +++ КОНЕЦ ИСПРАВЛЕНИЯ +++
+
+        // 1. Создаем структурированный объект для экспорта
+        const exportData = {
+            exportVersion: 1, // Версия для проверки при импорте
+            exportedAt: new Date().toISOString(),
+            // Сохраняем ОЧИЩЕННУЮ копию состояния слота
+            slotState: stateToExport,
+            // Сохраняем ПОЛНУЮ историю сообщений
+            history: currentHistory
+        };
+        
+        // 2. Превращаем объект в JSON и создаем буфер для отправки
+        const fileContent = JSON.stringify(exportData, null, 2); // null, 2 для красивого форматирования
+        const fileBuffer = Buffer.from(fileContent, 'utf8');
+
+        const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+        const fileName = `export_chat_${activeSlotIndex + 1}_${timestamp}.json`;
+
+        // 3. Отправляем файл как документ
+        await bot.sendDocument(chatId, fileBuffer, {}, {
+            filename: fileName,
+            contentType: 'application/json'
+        });
+
+        console.log(`✅ Экспорт для чата ${chatId}, слот ${activeSlotIndex + 1} успешно завершен.`);
+
+    } catch (error) {
+        console.error(`❌ Ошибка при экспорте для чата ${chatId}:`, error.message);
+        await bot.sendMessage(chatId, '🚫 Произошла ошибка при создании файла для экспорта.');
+    }
+}
+
+/**
+ * Обрабатывает полученный JSON-файл для импорта.
+ */
+async function processImportFile(bot, msg) {
+    const chatId = msg.chat.id;
+    initializeUser(chatId);
+    const userState = userStates[chatId];
+    const activeSlotIndex = userState.activeChatSlot;
+    const currentSlotState = userState.slots[activeSlotIndex];
+
+    // Сбрасываем флаг ожидания файла
+    currentSlotState.isWaitingForImportFile = false;
+
+    // --- Блок проверок безопасности и валидации ---
+    if (!msg.document) {
+        await bot.sendMessage(chatId, 'Пожалуйста, пришли именно файл. Или напиши /cancel для отмены.');
+        currentSlotState.isWaitingForImportFile = true; // Снова ждем файл
+        return;
+    }
+
+    if (msg.document.mime_type !== 'application/json') {
+        await bot.sendMessage(chatId, '❌ Ошибка: Файл должен быть в формате JSON. Попробуй еще раз или напиши /cancel.');
+        currentSlotState.isWaitingForImportFile = true; // Снова ждем файл
+        return;
+    }
+    
+    try {
+        await bot.sendMessage(chatId, '⏳ Получила файл, начинаю проверку и импорт...');
+        const fileId = msg.document.file_id;
+        const fileStream = bot.getFileStream(fileId);
+        
+        let fileContent = '';
+        for await (const chunk of fileStream) {
+            fileContent += chunk.toString('utf8');
+        }
+
+        const importedData = JSON.parse(fileContent);
+
+        // Главная проверка: это наш файл или случайный?
+        if (importedData.exportVersion !== 1 || !importedData.slotState || !Array.isArray(importedData.history)) {
+             await bot.sendMessage(chatId, '❌ Ошибка: Структура файла не соответствует стандарту. Убедись, что это файл, экспортированный из этого бота.');
+             return;
+        }
+
+        // --- Если все проверки пройдены, начинаем импорт ---
+        
+        // 1. Полностью заменяем состояние слота данными из файла
+        // Мы используем Object.assign для "умного" слияния на случай, если в новой версии бота появятся поля, которых нет в старом файле
+        userStates[chatId].slots[activeSlotIndex] = Object.assign(getDefaultSlotState(), importedData.slotState);
+        // Важно! После импорта отключаем флаг ожидания
+        userStates[chatId].slots[activeSlotIndex].isWaitingForImportFile = false;
+
+
+        // 2. Полностью заменяем историю в памяти
+        chatHistories[chatId][activeSlotIndex] = importedData.history;
+
+        // 3. Сохраняем новую импортированную историю на диск
+        saveChatHistory(chatId, activeSlotIndex, importedData.history);
+        
+        // 4. Сбрасываем таймер для этого слота, так как мы "обновили" диалог
+        clearIgnoreTimer(chatId, activeSlotIndex);
+
+        console.log(`✅ Импорт для чата ${chatId}, слот ${activeSlotIndex + 1} успешно завершен.`);
+        await bot.sendMessage(chatId, '✅ Файл с перепиской успешно импортирован! Твой диалог и отношения с Горепочкой восстановлены.');
+        
+        // Отправляем обновленную статистику для подтверждения
+        await sendRelationshipStats(bot, chatId, userStates[chatId].slots[activeSlotIndex]);
+
+
+    } catch (error) {
+        console.error(`❌ Ошибка импорта для чата ${chatId}:`, error.message);
+        await bot.sendMessage(chatId, '🚫 Ой! Произошла критическая ошибка при чтении файла. Возможно, он поврежден. Импорт отменен.');
     }
 }
 
