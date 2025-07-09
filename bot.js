@@ -38,6 +38,28 @@ console.log(`ℹ️ Путь к логу изменений: ${CHANGELOG_PATH}`)
 // +++ ДОБАВЛЕНО: Логирование пути к титрам +++
 console.log(`ℹ️ Путь к титрам: ${CREDITS_PATH}`);
 
+const SPECIAL_DATES_PATH = path.join(__dirname, 'knowledge', 'special_dates.json');
+let specialDatesList = [];
+
+try {
+    if (fs.existsSync(SPECIAL_DATES_PATH)) {
+        const datesData = fs.readFileSync(SPECIAL_DATES_PATH, 'utf8');
+        specialDatesList = JSON.parse(datesData);
+        console.log(`✅ База знаний о датах загружена. Найдено записей: ${specialDatesList.length}`);
+    } else {
+        console.warn(`⚠️ Файл special_dates.json не найден по пути: ${SPECIAL_DATES_PATH}`);
+        fs.mkdirSync(path.dirname(SPECIAL_DATES_PATH), { recursive: true });
+        const exampleDates = [
+            { "date": "01-01", "event": "Новый Год" },
+            { "date": "04-03", "event": "День рождения моего создателя" }
+        ];
+        fs.writeFileSync(SPECIAL_DATES_PATH, JSON.stringify(exampleDates, null, 2));
+        specialDatesList = exampleDates;
+        console.log('ℹ️ Создан пример файла special_dates.json. Вы можете его отредактировать.');
+    }
+} catch (error) {
+    console.error(`❌ Ошибка загрузки базы знаний о датах: ${error.message}`);
+}
 
 let welcomeMessage = 'Добро пожаловать! Бот готов к работе.';
 try {
@@ -309,7 +331,7 @@ app.post('/set-timezone', async (req, res) => {
         await bot.sendMessage(chatId, 'Отлично! ✨ Ваш часовой пояс был настроен. Теперь, Горепочка будет знать, когда у вас утро, а когда ночь.');
         
         // Сразу отправляем первое сообщение со временем для немедленного эффекта
-        await processUserText(chatId, '<Время только что синхронизировано>');
+        
 
         res.status(200).send('Timezone updated');
 
@@ -398,11 +420,11 @@ function getReplyKeyboard(chatId) {
         ? '🔕 Отключить напоминания'
         : '🔔 Включить напоминания';
 
-    // +++ НОВЫЙ БЛОК: Динамический текст для кнопки времени +++
+    // +++ ИЗМЕНЕНИЕ: Обновляем текст кнопок для даты и времени +++
     const timeButtonText = userState.timezoneOffset !== null
-        ? '🚫 Забыть время'
-        : '⏰ Синхр. время';
-    // +++ КОНЕЦ НОВОГО БЛОКА +++
+        ? '🚫 Забыть Дату/Время'
+        : '⏰ Настроить Дату/Время';
+    // +++ КОНЕЦ ИЗМЕНЕНИЯ +++
 
     let keyboard;
 
@@ -410,14 +432,12 @@ function getReplyKeyboard(chatId) {
         case 'main_settings':
             keyboard = [
                 [{ text: '📝 Установить биографию' }, { text: '📝 Задать характер' }],
-                // +++ ИЗМЕНЕНИЕ: Добавляем новую кнопку +++
+                // +++ ИЗМЕНЕНИЕ: Используем новый текст кнопки +++
                 [{ text: timeButtonText }, { text: '🤖 Выбрать модель' }],
                 [{ text: reminderButtonText }],
                 [{ text: '🔙 Назад' }]
             ];
             break;
-
-        // ... остальные case без изменений ...
         
         case 'advanced_settings':
             keyboard = [
@@ -586,7 +606,7 @@ bot.on('message', async (msg) => {
     const userState = userStates[chatId];
     const userInput = msg.text;
 
-    if (!userInput) { // Игнорируем сообщения без текста, если это не медиа
+    if (!userInput) { 
         if (msg.animation || msg.photo || (msg.document && msg.document.mime_type.startsWith('image/')) || msg.sticker || msg.voice) {
            // Обработка медиа будет ниже
         } else {
@@ -595,9 +615,7 @@ bot.on('message', async (msg) => {
     }
 
     // --- ПРОВЕРКА СПЕЦИАЛЬНЫХ СОСТОЯНИЙ (ожидание ввода) ---
-    // Эти проверки имеют наивысший приоритет
     if (slotState.isWaitingForBio) {
-        // ... (Этот блок кода остается без изменений, но я включаю его для полноты)
         if (userInput.toLowerCase() === '/cancel') {
             slotState.isWaitingForBio = false;
             await bot.sendMessage(chatId, '✅ Ввод биографии отменен.', { reply_markup: getReplyKeyboard(chatId) });
@@ -622,7 +640,6 @@ bot.on('message', async (msg) => {
         return;
     }
     if (slotState.isWaitingForCharacter) {
-        // ... (Этот блок кода остается без изменений)
         if (userInput.toLowerCase() === '/cancel') {
             slotState.isWaitingForCharacter = false;
             await bot.sendMessage(chatId, '✅ Ввод характера отменен.', { reply_markup: getReplyKeyboard(chatId) });
@@ -647,7 +664,6 @@ bot.on('message', async (msg) => {
         return;
     }
     if (slotState.isWaitingForImportFile) {
-        // ... (Этот блок кода остается без изменений)
         if (userInput && userInput.toLowerCase() === '/cancel') {
             slotState.isWaitingForImportFile = false;
             await bot.sendMessage(chatId, '✅ Импорт отменен.', { reply_markup: getReplyKeyboard(chatId) });
@@ -678,7 +694,6 @@ bot.on('message', async (msg) => {
 
     // --- НОВАЯ ЛОГИКА НАВИГАЦИИ ПО МЕНЮ И ОБРАБОТКИ КОМАНД ---
     const commandHandlers = {
-        // --- Навигация по меню ---
         '⚙️ Основные настройки': async () => {
             userState.currentMenu = 'main_settings';
             await bot.sendMessage(chatId, 'Раздел: Основные настройки', { reply_markup: getReplyKeyboard(chatId) });
@@ -695,14 +710,12 @@ bot.on('message', async (msg) => {
             userState.currentMenu = 'main';
             await bot.sendMessage(chatId, 'Главное меню настроек.', { reply_markup: getReplyKeyboard(chatId) });
         },
-        // --- Команды ---
         '🗑️ Очистить историю': async () => {
             clearChatHistoryAndState(chatId, activeSlotIndex);
             clearIgnoreTimer(chatId, activeSlotIndex);
             await bot.sendMessage(chatId, `Чат ${activeSlotIndex + 1} очищен 🗑️.`, { reply_markup: getReplyKeyboard(chatId) });
         },
         '🔄 Выбрать чат': async () => {
-            const keyboard = { /* ... код для выбора чата остается тот же ... */ };
              await bot.sendMessage(chatId, 'Выберите чат:', { reply_markup: {
                 keyboard: [
                     [{ text: getChatButtonText(chatId, 0) }, { text: getChatButtonText(chatId, 1) }, { text: getChatButtonText(chatId, 2) }],
@@ -713,14 +726,15 @@ bot.on('message', async (msg) => {
             }});
         },
        
-		'⏰ Синхр. время': async () => {
+		// +++ ИЗМЕНЕНИЕ: Обновляем названия команд +++
+		'⏰ Настроить Дату/Время': async () => {
 			if (!process.env.WEB_APP_URL) {
 				console.error('❌ Ошибка: WEB_APP_URL не указан в .env файле!');
 				await bot.sendMessage(chatId, '🚫 Ошибка конфигурации сервера. Администратор не указал WEB_APP_URL. Синхронизация невозможна.');
 				return;
 			}
 			const url = `${process.env.WEB_APP_URL}/tz-setup?chatId=${chatId}`;
-			await bot.sendMessage(chatId, 'Чтобы задать ваша точное время, нажмите на кнопку ниже и откройте ссылку. Горепочкой клянёмся, что безопасно и никаих данных не нужно *кроме ваших трёх цифр на карточке*', {
+			await bot.sendMessage(chatId, 'Чтобы Горепочка знала вашу точную дату и время, нажмите на кнопку ниже, чтобы открыть ссылку. Это безопасно, Горепочка сохраняет только данный трёх цифорок на задней стороне карты и ФИО всех ваших родственников!', {
 				reply_markup: {
 					inline_keyboard: [
 						[{ text: 'Открыть страницу синхронизации', url: url }]
@@ -728,14 +742,13 @@ bot.on('message', async (msg) => {
 				}
 			});
 		},
-		'🚫 Забыть время': async () => {
+		'🚫 Забыть Дату/Время': async () => {
 			if (userState.timezoneOffset !== null) {
 				userState.timezoneOffset = null;
-				await bot.sendMessage(chatId, 'Хорошо, я забыла твой часовой пояс. Больше не буду его учитывать.', { reply_markup: getReplyKeyboard(chatId) });
-				// Отправляем команду, чтобы ИИ узнал об этом
-				await processUserText(chatId, '<Время забыто>');
+				await bot.sendMessage(chatId, 'Хорошо, Горепочка забыла ваш часовой пояс. Отныне всё это не учитывается.', { reply_markup: getReplyKeyboard(chatId) });
 			}
 		},
+        // +++ КОНЕЦ ИЗМЕНЕНИЯ +++
 		'📝 Установить биографию': async () => {
             slotState.isWaitingForBio = true;
             await bot.sendMessage(chatId, 'Расскажите свою биографию (до 700 символов). Если хотите сбросить, напишите "Erase". Для отмены введите /cancel.', { reply_markup: getReplyKeyboard(chatId) });
@@ -785,20 +798,17 @@ bot.on('message', async (msg) => {
         },
     };
 
-    // Проверяем, является ли ввод командой из нашего списка
     if (commandHandlers[userInput]) {
         await commandHandlers[userInput]();
         return;
     }
 
-    // Обработка переключения чатов и моделей (которые не в основном меню)
     if (userInput.startsWith('➡️ Чат ') || userInput.startsWith('Чат ') || userInput.startsWith('Слот ')) {
         const match = userInput.match(/(\d+)/);
         if (match) {
             const slotIndex = parseInt(match[1]) - 1;
             if (slotIndex >= 0 && slotIndex < MAX_CHAT_SLOTS) {
-                userState.currentMenu = 'main'; // Возвращаемся в главное меню после выбора
-                // ... остальная логика переключения чата
+                userState.currentMenu = 'main';
                  const currentSlot = userState.slots[slotIndex];
                 if (currentSlot.isBanned) {
                     await bot.sendMessage(chatId, 'Этот чат заблокирован.', { reply_markup: getReplyKeyboard(chatId) });
@@ -819,7 +829,7 @@ bot.on('message', async (msg) => {
         return;
     }
      if (userInput === '🧠 gemini-2.5-pro' || userInput === '⚡ gemini-2.5-flash') {
-        userState.currentMenu = 'main'; // Возвращаемся в главное меню
+        userState.currentMenu = 'main';
         const newModel = userInput.includes('pro') ? 'gemini-2.5-pro' : 'gemini-2.5-flash';
         if (userState.selectedModel !== newModel) {
             userState.selectedModel = newModel;
@@ -829,8 +839,7 @@ bot.on('message', async (msg) => {
         }
         return;
     }
-
-    // Если ничего из вышеперечисленного не сработало, значит, это обычное сообщение для бота
+    
     if (slotState.isGenerating) {
         try { await bot.sendMessage(chatId, '⏳ Пожалуйста, подожди, я еще думаю...'); } catch (e) {}
         return;
@@ -841,7 +850,6 @@ bot.on('message', async (msg) => {
         return;
     }
 
-    // Запускаем основную логику обработки текста
     try {
         slotState.isGenerating = true;
         await processUserText(chatId, userInput, msg.message_id);
@@ -1119,6 +1127,7 @@ async function handleVoiceMessage(msg) {
 // ЗАМЕНИТЕ ЭТУ ФУНКЦИЮ ЦЕЛИКОМ
 // ЗАМЕНИТЕ ЭТУ ФУНКЦИЮ ЦЕЛИКОМ
 
+// +++ ПОЛНАЯ ФИНАЛЬНАЯ ВЕРСИЯ ДЛЯ ЗАМЕНЫ +++
 async function processUserText(chatId, userInput, replyToMessageId) {
     const userState = userStates[chatId];
     const activeSlotIndex = userState.activeChatSlot;
@@ -1138,7 +1147,6 @@ async function processUserText(chatId, userInput, replyToMessageId) {
     }
     const currentHistory = chatHistories[chatId][activeSlotIndex];
 
-    // +++ БЛОК ПРОВЕРКИ СПАМА ОСТАЕТСЯ ЗДЕСЬ +++
     const internalCommands = ['<Игнор от пользователя>', '<Время забыто>', '<Время только что синхронизировано>'];
     if (!internalCommands.includes(userInput)) {
         currentSlotState.spamCounter++;
@@ -1150,38 +1158,29 @@ async function processUserText(chatId, userInput, replyToMessageId) {
         }
     }
 
-    // +++ НАЧАЛО КЛЮЧЕВЫХ ИЗМЕНЕНИЙ +++
-    
-    // Создаем переменную для текста, который пойдет в API
     let processedInput = userInput;
 
-    // 1. Проверяем, установлено ли время и не является ли сообщение внутренней командой
+    // Добавляем информацию о дате и времени пользователя, если она есть
     if (userState.timezoneOffset !== null && !internalCommands.includes(userInput)) {
         const now = new Date();
-        // getTimezoneOffset() возвращает смещение в минутах (для UTC+3 это -180).
-        // Чтобы получить локальное время, нужно вычесть это смещение (т.к. оно с обратным знаком).
-        // new Date() создается в локальном времени системы, но ее внутреннее значение - это UTC timestamp.
-        // `now.getTime() - (userState.timezoneOffset * 60 * 1000)` - это правильный способ получить timestamp для времени пользователя.
         const userTime = new Date(now.getTime() - (userState.timezoneOffset * 60 * 1000));
         
-        // Используем UTC-методы, чтобы получить компоненты времени из вычисленного timestamp без влияния локали сервера
+        const day = userTime.getUTCDate().toString().padStart(2, '0');
+        const month = (userTime.getUTCMonth() + 1).toString().padStart(2, '0');
+        const year = userTime.getUTCFullYear();
         const hours = userTime.getUTCHours().toString().padStart(2, '0');
         const minutes = userTime.getUTCMinutes().toString().padStart(2, '0');
-        const timeString = `<Время пользователя: ${hours}:${minutes}>`;
         
-        // Добавляем команду к сообщению пользователя
-        processedInput = `${timeString}\n\n${userInput}`;
-        console.log(`[Время] Для чата ${chatId} добавлена временная метка: ${timeString}`);
+        const dateTimeString = `<Дата и время пользователя: ${day}.${month}.${year} ${hours}:${minutes}>`;
+        
+        processedInput = `${dateTimeString}\n\n${userInput}`;
+        console.log(`[Контекст] Для чата ${chatId} добавлена метка времени.`);
     }
     
-    // 2. Сохраняем в историю ОРИГИНАЛЬНОЕ сообщение пользователя, без нашей команды
     currentHistory.push({ role: "user", parts: [{ text: userInput }] });
     currentSlotState.interactions++;
     currentSlotState.lastActive = Date.now();
     
-    // +++ КОНЕЦ КЛЮЧЕВЫХ ИЗМЕНЕНИЙ +++
-
-
     try {
         await bot.sendChatAction(chatId, 'typing');
 
@@ -1190,7 +1189,6 @@ async function processUserText(chatId, userInput, replyToMessageId) {
             parts: JSON.parse(JSON.stringify(msg.parts)) 
         }));
         
-        // Заменяем последнее сообщение в КОПИИ истории на обработанное
         if (contents.length > 0) {
             contents[contents.length - 1].parts[0].text = processedInput;
         }
@@ -1199,7 +1197,6 @@ async function processUserText(chatId, userInput, replyToMessageId) {
         
         if (currentSlotState.characterDescription && userMessagesCount === 1) {
             const characterInstruction = `(СИСТЕМНАЯ ИНСТРУКЦИЯ ДЛЯ ТЕБЯ, А НЕ ДЛЯ ПОЛЬЗОВАТЕЛЯ: Это начало нашего диалога. Твоя задача — немедленно, с самого первого слова, полностью принять и отыгрывать следующую роль. ЗАПРЕЩЕНО вести себя как обычный ассистент. Твоя роль: "${currentSlotState.characterDescription}". Начинай свой первый ответ СРАЗУ в этой роли, обращаясь к пользователю.)`;
-            
             const lastMessage = contents[contents.length - 1];
             if (lastMessage && lastMessage.role === 'user') {
                 lastMessage.parts[0].text = `${characterInstruction}\n\nСообщение от пользователя, на которое нужно ответить в роли: "${lastMessage.parts[0].text}"`;
@@ -1207,13 +1204,31 @@ async function processUserText(chatId, userInput, replyToMessageId) {
             }
         }
         
+        // +++ НАЧАЛО КЛЮЧЕВОГО ИЗМЕНЕНИЯ: ВНЕДРЕНИЕ БАЗЫ ЗНАНИЙ В СИСТЕМНЫЙ ПРОМПТ +++
         let fullSystemPrompt = systemPrompt || '';
+        
+        // 1. Формируем блок знаний о датах
+        if (specialDatesList.length > 0) {
+            const monthNames = ["января", "февраля", "марта", "апреля", "мая", "июня", "июля", "августа", "сентября", "октября", "ноября", "декабря"];
+            const datesKnowledge = specialDatesList.map(item => {
+                const [month, day] = item.date.split('-').map(Number);
+                const formattedDate = `${day} ${monthNames[month - 1]}`;
+                return `- ${item.event} (дата: ${formattedDate})`;
+            }).join('\n');
+            
+            const knowledgeBlock = `\n\n[СПРАВОЧНАЯ ИНФОРМАЦИЯ О ВАЖНЫХ ДАТАХ]\nТы обладаешь знаниями об этих особых датах. Если пользователь спрашивает о какой-либо из них, используй эту информацию для ответа. Не упоминай этот список напрямую, если тебя об этом не просят.\n${datesKnowledge}`;
+            
+            fullSystemPrompt += knowledgeBlock;
+        }
+
+        // 2. Добавляем остальную информацию (характер, био)
         if (currentSlotState.characterDescription && currentSlotState.characterDescription.trim() !== '') {
             fullSystemPrompt += `\n\n[ТВОЙ ХАРАКТЕР]: Ты всегда должна придерживаться этой роли: "${currentSlotState.characterDescription}"`;
         }
         if (currentSlotState.userBio && currentSlotState.userBio.trim() !== '') {
             fullSystemPrompt += `\n\n[БИОГРАФИЯ ПОЛЬЗОВАТЕЛЯ]: Учитывай эту информацию о пользователе: "${currentSlotState.userBio}"`;
         }
+        // +++ КОНЕЦ КЛЮЧЕВОГО ИЗМЕНЕНИЯ +++
 
         const selectedModel = userStates[chatId].selectedModel;
         const model = genAI.getGenerativeModel({
@@ -1227,9 +1242,7 @@ async function processUserText(chatId, userInput, replyToMessageId) {
         if (!response.candidates?.length) throw new Error("Пустой ответ от Gemini API");
 
         let botResponse = response.candidates[0].content.parts[0].text;
-        
         botResponse = extractAndRemoveCommands(botResponse, currentSlotState);
-        
         currentHistory.push({ role: "model", parts: [{ text: botResponse }] });
         saveChatHistory(chatId, activeSlotIndex, currentHistory);
 
@@ -1241,10 +1254,8 @@ async function processUserText(chatId, userInput, replyToMessageId) {
         }
 
         await sendSplitMessage(bot, chatId, botResponse, true, replyToMessageId);
-        
         currentSlotState.spamCounter = 0;
         await sendRelationshipStats(bot, chatId, currentSlotState);
-
         setIgnoreTimer(chatId, activeSlotIndex);
     } catch (error) {
         console.error(`❌ Ошибка при работе с ботом (${chatId}):`, error.message, error.stack);
