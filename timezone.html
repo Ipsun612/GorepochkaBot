@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Синхронизация времени</title>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; background-color: #f0f2f5; text-align: center; }
+        .container { padding: 20px; background-color: white; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); }
+        h1 { color: #1c1e21; }
+        p { color: #606770; }
+        .success { color: #42b72a; }
+        .error { color: #fa3e3e; }
+    </style>
+</head>
+<body>
+    <div class="container" id="message-container">
+        <h1>Синхронизация...</h1>
+        <p>Пожалуйста, не закрывайте эту страницу.</p>
+    </div>
+
+    <script>
+        // Функция для отображения сообщений
+        function showMessage(type, title, text) {
+            const container = document.getElementById('message-container');
+            container.innerHTML = `<h1 class="${type}">${title}</h1><p>${text}</p>`;
+        }
+
+        // Основная логика
+        window.onload = async () => {
+            try {
+                // 1. Получаем chatId из URL (например, ?chatId=12345)
+                const params = new URLSearchParams(window.location.search);
+                const chatId = params.get('chatId');
+
+                if (!chatId) {
+                    throw new Error('ID чата не найден в URL. Пожалуйста, запросите ссылку у бота заново.');
+                }
+
+                // 2. Получаем смещение часового пояса в минутах
+                // getTimezoneOffset() возвращает разницу между UTC и местным временем в минутах.
+                // Для UTC+3 он вернет -180. Знак инвертирован, но это стандарт, сервер будет это учитывать.
+                const offset = new Date().getTimezoneOffset();
+
+                // 3. Отправляем данные на сервер бота
+                const response = await fetch('/set-timezone', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ chatId: chatId, offset: offset }),
+                });
+
+                if (!response.ok) {
+                    throw new Error(`Сервер ответил ошибкой: ${response.statusText}`);
+                }
+
+                // 4. Показываем сообщение об успехе
+                showMessage('success', 'Готово!', 'Время успешно синхронизировано. Теперь вы можете вернуться в Telegram.');
+
+            } catch (error) {
+                // В случае любой ошибки, показываем ее пользователю
+                showMessage('error', 'Ошибка!', error.message);
+            }
+        };
+    </script>
+</body>
+</html>
