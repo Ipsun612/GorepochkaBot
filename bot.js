@@ -1171,7 +1171,7 @@ async function processUserText(chatId, userInput, replyToMessageId) {
         const hours = userTime.getUTCHours().toString().padStart(2, '0');
         const minutes = userTime.getUTCMinutes().toString().padStart(2, '0');
         
-        const dateTimeString = `<Дата и время пользователя: ${day}.${month}.${year} ${hours}:${minutes}>`;
+        const dateTimeString = `<Дата и время пользователя: ${day}.${month}.${year} ${hours}:${minutes}> Отныне действуй согласно контексту. Можешь пожелать доброго утра или ночи, если время позволяет, или например сказать что у пользователя вечереет!`;
         
         processedInput = `${dateTimeString}\n\n${userInput}`;
         console.log(`[Контекст] Для чата ${chatId} добавлена метка времени.`);
@@ -1216,7 +1216,7 @@ async function processUserText(chatId, userInput, replyToMessageId) {
                 return `- ${item.event} (дата: ${formattedDate})`;
             }).join('\n');
             
-            const knowledgeBlock = `\n\n[СПРАВОЧНАЯ ИНФОРМАЦИЯ О ВАЖНЫХ ДАТАХ]\nТы обладаешь знаниями об этих особых датах. Если пользователь спрашивает о какой-либо из них, используй эту информацию для ответа. Не упоминай этот список напрямую, если тебя об этом не просят.\n${datesKnowledge}`;
+            const knowledgeBlock = `\n\n[СПРАВОЧНАЯ ИНФОРМАЦИЯ О ВАЖНЫХ ДАТАХ]\nТы обладаешь знаниями об этих особых датах.Если этот день настанет, то поздравь пользователя с этим праздником. А Если пользователь спрашивает о какой-либо из них, используй эту информацию для ответа. Не упоминай этот список напрямую, если тебя об этом не просят.\n${datesKnowledge}`;
             
             fullSystemPrompt += knowledgeBlock;
         }
