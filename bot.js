@@ -608,7 +608,7 @@ function getReplyKeyboard(chatId) {
             keyboard = [
                 // +++ ДОБАВЛЕНА КНОПКА ДНЕВНИКА +++
                 [{ text: 'ℹ️ Титры' }, { text: '📄 Изменения' }],
-                [{ text: '📔Дневник '}],
+                [{ text: '📔 Дневник '}],
                 [{ text: '🔙 Назад' }]
             ];
             break;
@@ -984,11 +984,11 @@ bot.on('message', async (msg) => {
         'ℹ️ Титры': async () => {
             await bot.sendMessage(chatId, creditsText, { parse_mode: 'Markdown', reply_markup: getReplyKeyboard(chatId) });
         },
-		'Дневник 📔': async () => {
+		'📔 Дневник': async () => {
             const diaryEntries = loadDiary(chatId, activeSlotIndex);
             
             if (diaryEntries.length === 0) {
-                await bot.sendMessage(chatId, 'В моей голове пока пусто... по крайней мере, насчет этого чата. 텅 비었다.', { reply_markup: getReplyKeyboard(chatId) });
+                await bot.sendMessage(chatId, 'В моей голове пока пусто... по крайней мере, насчет этого чата.', { reply_markup: getReplyKeyboard(chatId) });
                 return;
             }
 
