@@ -1,0 +1,18 @@
+{
+  "interactions": 0,
+  "lastActive": 0,
+  "contextSize": 0,
+  "relationshipLevel": 0,
+  "relationshipStatus": "Незнакомец",
+  "mood": "Нейтральное",
+  "isBanned": false,
+  "ignoreTimer": null,
+  "ignoreState": "default",
+  "userBio": "",
+  "isWaitingForBio": false,
+  "characterDescription": "",
+  "isWaitingForCharacter": false,
+  "isGenerating": false,
+  "isWaitingForImportFile": false,
+  "diary": []
+}

@@ -1,0 +1,19 @@
+{
+  "interactions": 1,
+  "lastActive": 1752561391823,
+  "contextSize": 0,
+  "relationshipLevel": 0,
+  "relationshipStatus": "Незнакомец",
+  "mood": "Заинтересованная",
+  "isBanned": false,
+  "ignoreTimer": null,
+  "ignoreState": "default",
+  "userBio": "",
+  "isWaitingForBio": false,
+  "characterDescription": "",
+  "isWaitingForCharacter": false,
+  "isGenerating": true,
+  "isWaitingForImportFile": false,
+  "diary": [],
+  "spamCounter": null
+}

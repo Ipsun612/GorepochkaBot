@@ -22,8 +22,10 @@ console.log(`🧠 Используется модель: ${GEMINI_MODEL_NAME}`);
 // Настройка директорий
 const HISTORY_DIR = path.join(__dirname, 'history');
 const IMAGES_DIR = path.join(__dirname, 'images');
+const DIARY_DIR = path.join(__dirname, 'diaries');
 if (!fs.existsSync(HISTORY_DIR)) fs.mkdirSync(HISTORY_DIR);
 if (!fs.existsSync(IMAGES_DIR)) fs.mkdirSync(IMAGES_DIR);
+if (!fs.existsSync(DIARY_DIR)) fs.mkdirSync(DIARY_DIR);
 
 // Создайте папку 'bot_data' в корне проекта
 const DATA_DIR = path.join(__dirname, 'Logs');
@@ -88,16 +90,83 @@ try {
     console.error(`❌ Ошибка загрузки титров: ${error.message}`);
 }
 
+const PROMPTS_DIR = path.join(__dirname, 'Prompts/Gorepochka');
 let systemPrompt = '';
+
+
+function loadSystemPrompt(directory) {
+    let combinedPrompt = '';
+    
+    // Проверяем, существует ли указанная директория
+    if (!fs.existsSync(directory)) {
+        console.warn(`⚠️ Директория с промптами не найдена: ${directory}`);
+        // Создаем папку и файл-пример для пользователя
+        fs.mkdirSync(directory, { recursive: true });
+        const examplePromptPath = path.join(directory, '01_base_prompt.txt');
+        const exampleContent = 'Это базовый промпт. Опишите здесь основную роль и поведение вашего персонажа.';
+        fs.writeFileSync(examplePromptPath, exampleContent);
+        console.log(`ℹ️ Создана папка для промптов и пример файла: ${examplePromptPath}`);
+        return exampleContent; // Возвращаем пример, чтобы бот не запускался с пустым промптом
+    }
+
+    try {
+        // Получаем список всех файлов и папок в директории
+        const files = fs.readdirSync(directory);
+        
+        // Сортируем файлы, чтобы они читались в предсказуемом порядке (например, 01_..., 02_...)
+        files.sort();
+
+        files.forEach(file => {
+            const fullPath = path.join(directory, file);
+            const stat = fs.statSync(fullPath);
+
+            if (stat.isDirectory()) {
+                // Если это папка, вызываем эту же функцию для неё (рекурсия)
+                combinedPrompt += loadSystemPrompt(fullPath) + '\n\n';
+            } else if (path.extname(file).toLowerCase() === '.txt') {
+                // Если это .txt файл, читаем его и добавляем содержимое
+                console.log(`✅ Загрузка промпта из файла: ${fullPath}`);
+                const content = fs.readFileSync(fullPath, 'utf8');
+                combinedPrompt += content + '\n\n'; // Добавляем два переноса строки для разделения частей промпта
+            }
+        });
+    } catch (error) {
+         console.error(`❌ Ошибка при чтении директории промптов ${directory}: ${error.message}`);
+    }
+
+    return combinedPrompt.trim(); // Убираем лишние пробелы в конце
+}
+
+// Запускаем процесс загрузки
 try {
-    const PROMPT_FILE_PATH = path.join(__dirname, 'Prompts/Gorepochka/gorepochka.txt');
-    systemPrompt = fs.readFileSync(PROMPT_FILE_PATH, 'utf8');
-    console.log('✅ Системный промпт загружен');
+    systemPrompt = loadSystemPrompt(PROMPTS_DIR);
+    if (systemPrompt) {
+        console.log('✅ Системный промпт успешно собран из файлов.');
+        // Для отладки можно раскомментировать следующую строку, чтобы увидеть итоговый промпт
+        // console.log('--- Итоговый системный промпт ---\n', systemPrompt, '\n--- Конец промпта ---');
+    } else {
+        console.error('❌ Ошибка: Системный промпт пуст. Проверьте папку Prompts/Gorepochka.');
+    }
 } catch (error) {
-    console.error(`❌ Ошибка загрузки промпта: ${error.message}`);
+    console.error(`❌ Критическая ошибка при загрузке системного промпта: ${error.message}`);
+}
+
+const NARRATOR_PROMPTS_DIR = path.join(__dirname, 'Prompts/Narrator');
+let narratorSystemPrompt = '';
+try {
+    narratorSystemPrompt = loadSystemPrompt(NARRATOR_PROMPTS_DIR);
+    if (narratorSystemPrompt) {
+        console.log('✅ Системный промпт Рассказчика успешно собран.');
+    } else {
+        // Это не критическая ошибка, так как функция может быть неактивна
+        console.warn('⚠️ Системный промпт Рассказчика пуст. Проверьте папку Prompts/Narrator, если планируете использовать эту функцию.');
+    }
+} catch (error) {
+    console.error(`❌ Критическая ошибка при загрузке промпта Рассказчика: ${error.message}`);
 }
 
 const chatHistories = {};
+const diaries = {};
 const userStates = {};
 const MAX_CHAT_SLOTS = 8;
 
@@ -109,7 +178,7 @@ function getDefaultSlotState() {
         spamCounter: 0,
         relationshipLevel: 0,
         relationshipStatus: 'Незнакомец',
-        stressLevel: 0,
+        moodlet: 'В норме', // <--- ЗАМЕНА: stressLevel на moodlet
         isBanned: false,
         ignoreTimer: null,
         ignoreState: 'default',
@@ -117,9 +186,11 @@ function getDefaultSlotState() {
         isWaitingForBio: false, 
         characterDescription: '',
         isWaitingForCharacter: false,
-        // +++ ИЗМЕНЕНИЕ: Добавляем флаг блокировки для предотвращения гонки состояний +++
         isGenerating: false,
-        isWaitingForImportFile: false // Добавил недостающий флаг для чистоты
+        isWaitingForImportFile: false,
+		narratorPrompt: '', 
+        isWaitingForNarrator: false,
+        narratorInterventionCounter: 0
     };
 }
 
@@ -138,8 +209,9 @@ function getChatButtonText(chatId, slotIndex) {
     } else {
         const icon = '📁';
         const rel = `❤️ ${slotState.relationshipLevel} (${slotState.relationshipStatus})`;
-        const stress = `⛈️ ${slotState.stressLevel}`;
-        buttonText += `Чат ${slotIndex + 1} ${icon} ${rel} ${stress}`;
+        // +++ ИЗМЕНЕНИЕ: Вместо стресса показываем мудлет +++
+        const moodlet = `💭 ${slotState.moodlet}`; 
+        buttonText += `Чат ${slotIndex + 1} ${icon} ${rel} ${moodlet}`;
     }
 
     if (buttonText.length > 64) buttonText = buttonText.substring(0, 61) + '...';
@@ -238,7 +310,74 @@ function initializeUser(chatId) {
     if (!chatHistories[chatId]) {
         chatHistories[chatId] = Array(MAX_CHAT_SLOTS).fill(null).map(() => []);
     }
+	if (!diaries[chatId]) {
+        diaries[chatId] = Array(MAX_CHAT_SLOTS).fill(null).map(() => []);
+	
+	}
 }
+
+function getDiaryPath(chatId, slotIndex) {
+    return path.join(DIARY_DIR, `${chatId}_slot_${slotIndex}_diary.json`);
+}
+
+function loadDiary(chatId, slotIndex) {
+    // Сначала проверяем кэш
+    if (diaries[chatId] && diaries[chatId][slotIndex] && diaries[chatId][slotIndex].length > 0) {
+        return diaries[chatId][slotIndex];
+    }
+    
+    // Если в кэше пусто, загружаем с диска
+    const filePath = getDiaryPath(chatId, slotIndex);
+    if (fs.existsSync(filePath)) {
+        try {
+            const data = fs.readFileSync(filePath, 'utf8');
+            const diaryEntries = JSON.parse(data);
+            // Сохраняем в кэш
+            if (diaries[chatId]) {
+                diaries[chatId][slotIndex] = diaryEntries;
+            }
+            return diaryEntries;
+        } catch (e) {
+            console.error(`❌ Ошибка чтения дневника ${chatId}_slot_${slotIndex}:`, e.message);
+            return [];
+        }
+    }
+    return [];
+}
+
+function saveDiary(chatId, slotIndex, diaryEntries) {
+    // Обновляем кэш
+    if (diaries[chatId]) {
+        diaries[chatId][slotIndex] = diaryEntries;
+    }
+    // Сохраняем на диск
+    const filePath = getDiaryPath(chatId, slotIndex);
+    fs.writeFileSync(filePath, JSON.stringify(diaryEntries, null, 2));
+}
+
+async function processDiaryCommands(rawText, chatId, slotIndex) {
+    const commandRegex = /<Запомнить информацию:\s*(.*?)>/g;
+    let match;
+    let entryMade = false;
+
+    // Ищем все вхождения команды в тексте
+    while ((match = commandRegex.exec(rawText)) !== null) {
+        const textToRemember = match[1].trim();
+        if (textToRemember) {
+            // Загружаем текущие записи
+            const diaryEntries = loadDiary(chatId, slotIndex);
+            // Добавляем новую
+            diaryEntries.push(textToRemember);
+            // Сохраняем обновленный дневник
+            saveDiary(chatId, slotIndex, diaryEntries);
+            entryMade = true;
+            console.log(`[Дневник] Сохранена запись для чата ${chatId}/${slotIndex}: "${textToRemember}"`);
+        }
+    }
+
+    return entryMade; // Возвращаем, была ли сделана запись
+}
+
 
 
 function getChatHistoryPath(chatId, slotIndex) {
@@ -251,10 +390,15 @@ function loadChatHistory(chatId, slotIndex) {
         try {
             const data = fs.readFileSync(filePath, 'utf8');
             const history = JSON.parse(data);
+            
             // ПРОВЕРКА И ИНИЦИАЛИЗАЦИЯ ДАННЫХ ДЛЯ СТАРЫХ ИСТОРИЙ
             if (userStates[chatId] && userStates[chatId].slots[slotIndex]) {
                  if (userStates[chatId].slots[slotIndex].relationshipStatus === undefined) {
                     userStates[chatId].slots[slotIndex].relationshipStatus = 'Незнакомец';
+                 }
+                 // +++ ДОБАВЛЕНО: Проверка на наличие мудлета для старых чатов +++
+                 if (userStates[chatId].slots[slotIndex].moodlet === undefined) {
+                    userStates[chatId].slots[slotIndex].moodlet = 'В норме';
                  }
             }
             return history;
@@ -272,24 +416,37 @@ function saveChatHistory(chatId, slotIndex, history) {
 }
 
 function clearChatHistoryAndState(chatId, slotIndex) {
-    const filePath = getChatHistoryPath(chatId, slotIndex);
-    if (fs.existsSync(filePath)) {
-        fs.unlinkSync(filePath);
+    // Очистка истории чата
+    const historyFilePath = getChatHistoryPath(chatId, slotIndex);
+    if (fs.existsSync(historyFilePath)) {
+        fs.unlinkSync(historyFilePath);
     }
     if (chatHistories[chatId] && chatHistories[chatId][slotIndex]) {
         chatHistories[chatId][slotIndex] = [];
     }
+    
+    // +++ ДОБАВЛЕНО: Очистка дневника +++
+    const diaryFilePath = getDiaryPath(chatId, slotIndex);
+    if (fs.existsSync(diaryFilePath)) {
+        fs.unlinkSync(diaryFilePath);
+        console.log(`🗑️ Дневник для чата ${chatId}, слот ${slotIndex} очищен.`);
+    }
+    if (diaries[chatId] && diaries[chatId][slotIndex]) {
+        diaries[chatId][slotIndex] = [];
+    }
+
+    // Сброс состояния слота
     if (userStates[chatId] && userStates[chatId].slots[slotIndex]) {
-        // Сохраняем биографию и характер перед сбросом
         const currentUserBio = userStates[chatId].slots[slotIndex].userBio || '';
         const currentCharacterDescription = userStates[chatId].slots[slotIndex].characterDescription || '';
+		const currentNarratorPrompt = userStates[chatId].slots[slotIndex].narratorPrompt || '';
         
-        // Сбрасываем состояние слота
         userStates[chatId].slots[slotIndex] = getDefaultSlotState();
         
-        // Восстанавливаем биографию и характер
         userStates[chatId].slots[slotIndex].userBio = currentUserBio;
         userStates[chatId].slots[slotIndex].characterDescription = currentCharacterDescription;
+		userStates[chatId].slots[slotIndex].narratorPrompt = currentNarratorPrompt;
+		
     }
 }
 
@@ -363,10 +520,12 @@ async function isChatValid(chatId) {
 
 async function sendRelationshipStats(bot, chatId, slotState) {
     if (!slotState) return;
-    // +++ ИЗМЕНЕНО: Теперь мы берем статус напрямую из состояния, а не вычисляем его.
+    
+    // +++ ИЗМЕНЕНИЕ: Заменяем Стресс на Настроение (мудлет) +++
     const statsMessage = `Статистика (Чат ${userStates[chatId] ? userStates[chatId].activeChatSlot + 1 : 'N/A'}):
   Уровень отношений: ${slotState.relationshipLevel} (${slotState.relationshipStatus})
-  Стресс: ${slotState.stressLevel}`;
+  Настроение: ${slotState.moodlet}`;
+  
     try {
         if (!(await isChatValid(chatId))) return;
         await bot.sendMessage(chatId, statsMessage);
@@ -420,11 +579,9 @@ function getReplyKeyboard(chatId) {
         ? '🔕 Отключить напоминания'
         : '🔔 Включить напоминания';
 
-    // +++ ИЗМЕНЕНИЕ: Обновляем текст кнопок для даты и времени +++
     const timeButtonText = userState.timezoneOffset !== null
         ? '🚫 Забыть Дату/Время'
         : '⏰ Настроить Дату/Время';
-    // +++ КОНЕЦ ИЗМЕНЕНИЯ +++
 
     let keyboard;
 
@@ -432,7 +589,7 @@ function getReplyKeyboard(chatId) {
         case 'main_settings':
             keyboard = [
                 [{ text: '📝 Установить биографию' }, { text: '📝 Задать характер' }],
-                // +++ ИЗМЕНЕНИЕ: Используем новый текст кнопки +++
+				[{ text: '📖 Рассказчик' }],
                 [{ text: timeButtonText }, { text: '🤖 Выбрать модель' }],
                 [{ text: reminderButtonText }],
                 [{ text: '🔙 Назад' }]
@@ -449,7 +606,9 @@ function getReplyKeyboard(chatId) {
 
         case 'info':
             keyboard = [
-                [{ text: '📄 Изменения' }, { text: 'ℹ️ Титры' }],
+                // +++ ДОБАВЛЕНА КНОПКА ДНЕВНИКА +++
+                [{ text: 'ℹ️ Титры' }, { text: '📄 Изменения' }],
+                [{ text: '📔Дневник '}],
                 [{ text: '🔙 Назад' }]
             ];
             break;
@@ -557,30 +716,27 @@ bot.on('callback_query', async (callbackQuery) => {
     }
 });
 
-function extractAndRemoveCommands(text, slotState) { // isDebugMode больше не нужен
+function extractAndRemoveCommands(text, slotState) { 
     const patterns = [
         {
-            regex: /<Уровень доверия\s*=\s*(-?\d+)>/g,
+            regex: /<Уровень отношений\s*=\s*(-?\d+)>/g,
             action: (value) => {
                 const newValue = parseInt(value, 10);
                 slotState.relationshipLevel = Math.max(-100, Math.min(100, newValue));
             }
         },
         { regex: /<Изменить статус отношений на:\s*(.*?)>/g, action: (status) => slotState.relationshipStatus = status.trim() },
-        {
-            regex: /<Стресс\s*=\s*(\d+)>/g,
-            action: (value) => {
-                const newValue = parseInt(value, 10);
-                slotState.stressLevel = Math.max(0, Math.min(100, newValue));
-            }
+        // +++ НОВЫЙ ПАТТЕРН ДЛЯ МУДЛЕТА +++
+        { 
+            regex: /<Установить мудлет на:\s*(.*?)>/g, 
+            action: (status) => slotState.moodlet = status.trim() 
         },
+        // --- СТАРЫЙ ПАТТЕРН ДЛЯ СТРЕССА УДАЛЕН ---
         { regex: /<Дать бан>/g, action: () => slotState.isBanned = true },
         { regex: /<Пользователь попрощался>/g, action: () => { slotState.ignoreState = 'goodbye'; console.log(`Статус одного из чатов изменен на 'goodbye'`); } },
         { regex: /<Пользователь в сети>/g, action: () => { slotState.ignoreState = 'default'; console.log(`Статус одного из чатов изменен на 'default'`); } },
     ];
 
-    // Итерируемся по паттернам и выполняем действия, если команда найдена.
-    // Мы НЕ изменяем текст, а только считываем данные.
     patterns.forEach(pattern => {
         const regex = new RegExp(pattern.regex.source, 'g');
         let match;
@@ -590,13 +746,10 @@ function extractAndRemoveCommands(text, slotState) { // isDebugMode больше
         }
     });
 
-    // Возвращаем исходный, нетронутый текст.
-    // Вся обработка тегов будет в sendSplitMessage.
     return text;
 }
 
-// +++ ПОЛНАЯ ВЕРСИЯ ДЛЯ ЗАМЕНЫ +++
-// +++ ПОЛНАЯ ВЕРСИЯ ДЛЯ ЗАМЕНЫ +++
+
 bot.on('message', async (msg) => {
     const chatId = msg.chat.id;
     initializeUser(chatId);
@@ -670,6 +823,35 @@ bot.on('message', async (msg) => {
             return;
         }
         await processImportFile(bot, msg);
+        return;
+    }
+	if (slotState.isWaitingForNarrator) {
+        if (userInput.toLowerCase() === '/cancel') {
+            slotState.isWaitingForNarrator = false;
+            await bot.sendMessage(chatId, '✅ Настройка Рассказчика отменена.', { reply_markup: getReplyKeyboard(chatId) });
+            return;
+        }
+        const narratorText = userInput;
+        slotState.isWaitingForNarrator = false;
+
+        if (narratorText.toLowerCase() === 'erase') {
+            slotState.narratorPrompt = '';
+            slotState.narratorInterventionCounter = 0;
+            clearChatHistoryAndState(chatId, activeSlotIndex);
+            await bot.sendMessage(chatId, '✅ Рассказчик деактивирован. **Диалог очищен.**', { reply_markup: getReplyKeyboard(chatId), parse_mode: 'Markdown' });
+            return;
+        }
+
+        if (narratorText.length > 3000) {
+            await bot.sendMessage(chatId, '❌ Слишком длинное описание (больше 3000 символов). Попробуйте еще раз.', { reply_markup: getReplyKeyboard(chatId) });
+            slotState.isWaitingForNarrator = true; // Снова ждем ввода
+            return;
+        }
+
+        slotState.narratorPrompt = narratorText;
+        slotState.narratorInterventionCounter = 0; // Сбрасываем счетчик при новой настройке
+        clearChatHistoryAndState(chatId, activeSlotIndex);
+        await bot.sendMessage(chatId, '✅ Рассказчик активирован! **Текущий диалог сброшен**, чтобы изменения вступили в силу.', { reply_markup: getReplyKeyboard(chatId), parse_mode: 'Markdown' });
         return;
     }
 
@@ -757,7 +939,13 @@ bot.on('message', async (msg) => {
             slotState.isWaitingForCharacter = true;
             await bot.sendMessage(chatId, 'Задайте характер Горепочке (до 400 символов). Для отмены напишите /cancel.', { reply_markup: getReplyKeyboard(chatId) });
         },
-        '🤖 Выбрать модель': async () => {
+        '📖 Рассказчик': async () => {
+            slotState.isWaitingForNarrator = true;
+            await bot.sendMessage(chatId, 'Как должен идти диалог? (до 3000 символов).\n\nПропишите `Erase`, чтобы отключить рассказчика. \nДля отмены введите /cancel.', {
+                reply_markup: { remove_keyboard: true } // Временно убираем клавиатуру для чистоты ввода
+            });
+        },
+		'🤖 Выбрать модель': async () => {
              await bot.sendMessage(chatId, 'Выберите модель:', {
                 reply_markup: {
                     keyboard: [[{ text: '🧠 gemini-2.5-pro' }, { text: '⚡ gemini-2.5-flash' }],[{ text: '🔙 Назад' }]],
@@ -796,7 +984,26 @@ bot.on('message', async (msg) => {
         'ℹ️ Титры': async () => {
             await bot.sendMessage(chatId, creditsText, { parse_mode: 'Markdown', reply_markup: getReplyKeyboard(chatId) });
         },
+		'Дневник 📔': async () => {
+            const diaryEntries = loadDiary(chatId, activeSlotIndex);
+            
+            if (diaryEntries.length === 0) {
+                await bot.sendMessage(chatId, 'В моей голове пока пусто... по крайней мере, насчет этого чата. 텅 비었다.', { reply_markup: getReplyKeyboard(chatId) });
+                return;
+            }
+
+            const header = `Мысли Горепочки (чат: ${activeSlotIndex + 1}):\n\n`;
+            
+            // Форматируем каждую запись с нумерацией и отступом
+            const formattedEntries = diaryEntries.map((entry, index) => `${index + 1}. ${entry}`).join('\n\n');
+
+            await bot.sendMessage(chatId, header + formattedEntries, { reply_markup: getReplyKeyboard(chatId) });
+        }
+        // +++ КОНЕЦ НОВОГО ОБРАБОТЧИКА +++
     };
+
+	
+	
 
     if (commandHandlers[userInput]) {
         await commandHandlers[userInput]();
@@ -1121,13 +1328,6 @@ async function handleVoiceMessage(msg) {
     }
 }
 
-// ПОЛНАЯ ВЕРСИЯ ДЛЯ ЗАМЕНЫ
-// ПОЛНАЯ ИСПРАВЛЕННАЯ ВЕРСИЯ ДЛЯ ЗАМЕНЫ
-
-// ЗАМЕНИТЕ ЭТУ ФУНКЦИЮ ЦЕЛИКОМ
-// ЗАМЕНИТЕ ЭТУ ФУНКЦИЮ ЦЕЛИКОМ
-
-// +++ ПОЛНАЯ ФИНАЛЬНАЯ ВЕРСИЯ ДЛЯ ЗАМЕНЫ +++
 async function processUserText(chatId, userInput, replyToMessageId) {
     const userState = userStates[chatId];
     const activeSlotIndex = userState.activeChatSlot;
@@ -1156,10 +1356,68 @@ async function processUserText(chatId, userInput, replyToMessageId) {
             } catch (error) { /* ignore */ }
             return;
         }
+        if (currentSlotState.narratorPrompt) {
+            currentSlotState.narratorInterventionCounter++;
+        }
     }
 
+    // --- НАЧАЛО ИСПРАВЛЕНИЯ: Логика Рассказчика перенесена наверх ---
+
+    let narratorInstruction = '';
+	// Проверяем, активен ли Рассказчик и наступила ли его очередь
+	if (currentSlotState.narratorPrompt && currentSlotState.narratorInterventionCounter > 0 && currentSlotState.narratorInterventionCounter % 2 === 0) {
+		console.log(`[Рассказчик] Активация для чата ${chatId}/${activeSlotIndex}.`);
+		try {
+			const narratorModel = genAI.getGenerativeModel({
+				model: userState.selectedModel,
+				systemInstruction: narratorSystemPrompt // Используем новый "железный" промпт
+			});
+
+			// --- НОВЫЙ ПОДХОД: Формируем сценарий вместо истории ---
+			// Очищаем историю от служебных тегов Горепочки
+			const cleanedHistory = currentHistory.map(msg => {
+				const role = msg.role === 'user' ? 'Пользователь' : 'Горепочка';
+				const text = msg.parts[0].text.replace(/<[^>]*>/g, '').trim();
+				return { role, text };
+			}).filter(msg => msg.text); // Убираем пустые сообщения
+
+			// Превращаем диалог в сценарий
+			const dialogueScript = cleanedHistory.map(msg => `${msg.role}: ${msg.text}`).join('\n');
+
+			// Собираем финальный промпт для Рассказчика
+			const finalNarratorPrompt = `
+	[ИСТОРИЯ ДИАЛОГА ДЛЯ АНАЛИЗА]:
+	---
+	${dialogueScript}
+	---
+
+	[ОСНОВНАЯ ЦЕЛЬ ОТ ПОЛЬЗОВАТЕЛЯ]:
+	"${currentSlotState.narratorPrompt}"
+
+	[ТВОЙ ПРИКАЗ ДЛЯ ГОРЕПОЧКИ]:
+	`;
+			// --- КОНЕЦ НОВОГО ПОДХОДА ---
+
+			const narratorResult = await narratorModel.generateContent(finalNarratorPrompt); // Отправляем как единый текст
+			const narratorResponse = await narratorResult.response;
+			
+			if (narratorResponse.candidates?.length) {
+				narratorInstruction = narratorResponse.candidates[0].content.parts[0].text;
+				console.log(`[Рассказчик] Сгенерировал приказ: "${narratorInstruction}"`);
+			}
+		} catch (narratorError) {
+			console.error(`❌ Ошибка генерации от Рассказчика для чата ${chatId}:`, narratorError.message);
+		}
+	}
+    
+    // Теперь, когда narratorInstruction точно определена (пустая или с текстом), формируем итоговый ввод
     let processedInput = userInput;
 
+    if (narratorInstruction) {
+        // Внедряем инструкцию от Рассказчика ПЕРЕД сообщением пользователя.
+        processedInput = `[СИСТЕМНАЯ ИНСТРУКЦИЯ ОТ РАССКАЗЧИКА]: ${narratorInstruction}\n\n[СООБЩЕНИЕ ПОЛЬЗОВАТЕЛЯ]: ${userInput}`;
+    }
+    
     // Добавляем информацию о дате и времени пользователя, если она есть
     if (userState.timezoneOffset !== null && !internalCommands.includes(userInput)) {
         const now = new Date();
@@ -1173,11 +1431,14 @@ async function processUserText(chatId, userInput, replyToMessageId) {
         
         const dateTimeString = `<Дата и время пользователя: ${day}.${month}.${year} ${hours}:${minutes}> Отныне действуй согласно контексту. Можешь пожелать доброго утра или ночи, если время позволяет, или например сказать что у пользователя вечереет!`;
         
-        processedInput = `${dateTimeString}\n\n${userInput}`;
+        processedInput = `${dateTimeString}\n\n${processedInput}`; // Добавляем в начало уже обработанного ввода
         console.log(`[Контекст] Для чата ${chatId} добавлена метка времени.`);
     }
+
+    // --- КОНЕЦ ИСПРАВЛЕНИЯ ---
     
-    currentHistory.push({ role: "user", parts: [{ text: userInput }] });
+    // В историю сохраняем ЧИСТЫЙ ввод пользователя, без наших инструкций
+    currentHistory.push({ role: "user", parts: [{ text: userInput }] }); 
     currentSlotState.interactions++;
     currentSlotState.lastActive = Date.now();
     
@@ -1190,7 +1451,8 @@ async function processUserText(chatId, userInput, replyToMessageId) {
         }));
         
         if (contents.length > 0) {
-            contents[contents.length - 1].parts[0].text = processedInput;
+            // А вот модели передаем уже обогащенный ввод
+            contents[contents.length - 1].parts[0].text = processedInput; 
         }
 
         const userMessagesCount = currentHistory.filter(m => m.role === 'user').length;
@@ -1204,10 +1466,8 @@ async function processUserText(chatId, userInput, replyToMessageId) {
             }
         }
         
-        // +++ НАЧАЛО КЛЮЧЕВОГО ИЗМЕНЕНИЯ: ВНЕДРЕНИЕ БАЗЫ ЗНАНИЙ В СИСТЕМНЫЙ ПРОМПТ +++
         let fullSystemPrompt = systemPrompt || '';
         
-        // 1. Формируем блок знаний о датах
         if (specialDatesList.length > 0) {
             const monthNames = ["января", "февраля", "марта", "апреля", "мая", "июня", "июля", "августа", "сентября", "октября", "ноября", "декабря"];
             const datesKnowledge = specialDatesList.map(item => {
@@ -1221,14 +1481,15 @@ async function processUserText(chatId, userInput, replyToMessageId) {
             fullSystemPrompt += knowledgeBlock;
         }
 
-        // 2. Добавляем остальную информацию (характер, био)
         if (currentSlotState.characterDescription && currentSlotState.characterDescription.trim() !== '') {
             fullSystemPrompt += `\n\n[ТВОЙ ХАРАКТЕР]: Ты всегда должна придерживаться этой роли: "${currentSlotState.characterDescription}"`;
         }
         if (currentSlotState.userBio && currentSlotState.userBio.trim() !== '') {
             fullSystemPrompt += `\n\n[БИОГРАФИЯ ПОЛЬЗОВАТЕЛЯ]: Учитывай эту информацию о пользователе: "${currentSlotState.userBio}"`;
         }
-        // +++ КОНЕЦ КЛЮЧЕВОГО ИЗМЕНЕНИЯ +++
+		if (currentSlotState.narratorPrompt) {
+            fullSystemPrompt += `\n\n[ПРАВИЛО РАССКАЗЧИКА]: Иногда перед сообщением пользователя ты будешь получать специальную системную инструкцию от Рассказчика. Она выглядит так: [СИСТЕМНАЯ ИНСТРУКЦИЯ ОТ РАССКАЗЧИКА]: ... Ты ДОЛЖНА беспрекословно следовать этой инструкции. Она имеет наивысший приоритет и полностью определяет контекст, эмоции и направление твоего следующего ответа. Игнорируй предыдущий контекст, если он противоречит инструкции Рассказчика.`;
+        }
 
         const selectedModel = userStates[chatId].selectedModel;
         const model = genAI.getGenerativeModel({
@@ -1242,6 +1503,7 @@ async function processUserText(chatId, userInput, replyToMessageId) {
         if (!response.candidates?.length) throw new Error("Пустой ответ от Gemini API");
 
         let botResponse = response.candidates[0].content.parts[0].text;
+		await processDiaryCommands(botResponse, chatId, activeSlotIndex);
         botResponse = extractAndRemoveCommands(botResponse, currentSlotState);
         currentHistory.push({ role: "model", parts: [{ text: botResponse }] });
         saveChatHistory(chatId, activeSlotIndex, currentHistory);
@@ -1270,7 +1532,6 @@ async function sendSplitMessage(bot, chatId, originalText, isAiResponseType, rep
     let typingTimer;
 
     const startTyping = async () => {
-        // ... (код этой вложенной функции остается без изменений) ...
         if (typingTimer) clearInterval(typingTimer);
         try {
             if (await isChatValid(chatId)) {
@@ -1286,7 +1547,6 @@ async function sendSplitMessage(bot, chatId, originalText, isAiResponseType, rep
     };
 
     const stopTyping = () => {
-        // ... (код этой вложенной функции остается без изменений) ...
         if (typingTimer) { clearInterval(typingTimer); typingTimer = null; }
     };
 
@@ -1298,55 +1558,64 @@ async function sendSplitMessage(bot, chatId, originalText, isAiResponseType, rep
     try {
         if (!(await isChatValid(chatId))) { stopTyping(); return []; }
 
-        const createMessageOptions = (textChunk) => {
-            const options = { parse_mode: 'Markdown' };
-            if (isFirstChunk && replyToMessageId && isAiResponseType && !textChunk.trim().startsWith('```')) {
-                options.reply_to_message_id = replyToMessageId;
-            }
-            return options;
-        };
-
+        // Эта внутренняя функция теперь содержит логику отката
         const sendMessageAndUpdateFlag = async (textChunk) => {
             if (!(await isChatValid(chatId))) return null;
 
-            // --- КЛЮЧЕВОЕ ИЗМЕНЕНИЕ: ОЧИСТКА ТЕКСТА ПРОИСХОДИТ ЗДЕСЬ ---
             let cleanText = textChunk;
             if (!isDebugMode) {
-                // В обычном режиме удаляем ВСЕ команды из текущего куска текста
                 cleanText = cleanText.replace(/<[^>]*>/g, '').trim();
             } else {
-                 // В режиме отладки просто убираем лишние пробелы
                  cleanText = cleanText.trim();
             }
 
-            if (!cleanText) return null; // Если после очистки ничего не осталось, не отправляем
+            if (!cleanText) return null;
 
-            const options = createMessageOptions(cleanText);
-            const sent = await bot.sendMessage(chatId, cleanText, options);
-            isFirstChunk = false;
-            return sent;
+            const options = { parse_mode: 'Markdown' };
+            if (isFirstChunk && replyToMessageId && isAiResponseType && !cleanText.trim().startsWith('```')) {
+                options.reply_to_message_id = replyToMessageId;
+            }
+
+            try {
+                // ПЕРВАЯ ПОПЫТКА: отправить с Markdown
+                const sent = await bot.sendMessage(chatId, cleanText, options);
+                isFirstChunk = false;
+                return sent;
+            } catch (error) {
+                // ВТОРАЯ ПОПЫТКА (если ошибка парсинга): отправить как простой текст
+                if (error.response && error.response.body && error.response.body.error_code === 400 && error.response.body.description.includes("can't parse entities")) {
+                    console.warn(`[Markdown Fallback] Ошибка парсинга Markdown для чата ${chatId}. Отправка в виде простого текста.`);
+                    console.warn(`[Markdown Fallback] Проблемный текст: "${cleanText}"`);
+                    
+                    // Удаляем опцию parse_mode, чтобы отправить как обычный текст
+                    delete options.parse_mode; 
+                    
+                    const sent = await bot.sendMessage(chatId, cleanText, options);
+                    isFirstChunk = false;
+                    return sent;
+                } else {
+                    // Если это другая ошибка (бот заблокирован и т.д.), пробрасываем ее дальше
+                    throw error;
+                }
+            }
         };
         
-        // Разделяем "грязный" текст по команде.
         const parts = originalText.split(/<Разделить сообщение>/g);
 
         for (let i = 0; i < parts.length; i++) {
             const part = parts[i];
             if (!(await isChatValid(chatId))) { stopTyping(); return messageIds; }
             
-            // Если это не первый кусок и мы в режиме отладки, добавляем видимый разделитель
             if (i > 0 && isDebugMode) {
                  await sendMessageAndUpdateFlag('_<Разделить сообщение>_');
             }
             
-            // Вычисляем задержку на основе "грязного" текста без команд
             const textWithoutCommands = part.replace(/<.*?>/g, '');
             const timePerCharacter = 62;
             const delay = textWithoutCommands.length * timePerCharacter;
 
             await new Promise(resolve => setTimeout(resolve, delay));
 
-            // Отправляем текущий "грязный" кусок в нашу новую умную функцию отправки
             const sent = await sendMessageAndUpdateFlag(part);
             if (sent) messageIds.push(sent.message_id);
         }
@@ -1361,6 +1630,7 @@ async function sendSplitMessage(bot, chatId, originalText, isAiResponseType, rep
             if (chatHistories[chatId]) delete chatHistories[chatId];
             return [];
         }
+        // Теперь сюда будут попадать только "настоящие" ошибки, а не ошибки парсинга
         console.error('❌ Ошибка при отправке разделенного сообщения:', error.message, error.stack);
         try {
             if (await isChatValid(chatId)) {
